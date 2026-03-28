@@ -1,24 +1,13 @@
-// ============================================================
-// AttendanceProvider
-// CHANGE: Added LocationService for GPS-based status detection
-// CHANGE: Added AttendanceStatus.locating for GPS UI feedback
-// FIX: Import path for location_service.dart added
-// ============================================================
-
 import 'package:camera/camera.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/services/camera_service.dart';
 import '../../../../core/services/face_ml_service.dart';
-import '../../../../core/services/location_service.dart'; // ← CRITICAL: must exist
+import '../../../../core/services/location_service.dart';
 import '../../../../core/utils/app_logger.dart';
 import '../../data/attendance_repository.dart';
 import '../../data/models/attendance_model.dart';
 import '../../../face_registration/data/face_repository.dart';
 
-// ============================================================
-// AttendanceStatus
-// CHANGE: Added locating — shown while GPS fetches location
-// ============================================================
 enum AttendanceStatus {
   idle,
   initializing,
@@ -26,18 +15,17 @@ enum AttendanceStatus {
   detecting,
   processing,
   verifying,
-  locating, // ← NEW: GPS fetch in progress
+  locating,
   checkInSuccess,
   checkOutSuccess,
+  autoCheckoutSuccess, // ← NEW: auto checkout at 6 PM
+  afterOfficeHours, // ← NEW: check-in blocked after 6 PM
   faceMismatch,
   faceNotRegistered,
   alreadyCheckedOut,
   error,
 }
 
-// ============================================================
-// AttendanceState
-// ============================================================
 class AttendanceState {
   final AttendanceStatus status;
   final String? message;
@@ -48,20 +36,17 @@ class AttendanceState {
   final AttendanceModel? todayRecord;
   final String? attendanceId;
 
-  // WHY locating included: GPS fetch is a loading state —
-  // button must be disabled + spinner shown during GPS fetch
   bool get isLoading =>
       status == AttendanceStatus.initializing ||
       status == AttendanceStatus.detecting ||
       status == AttendanceStatus.processing ||
       status == AttendanceStatus.verifying ||
-      status == AttendanceStatus.locating; // ← NEW
+      status == AttendanceStatus.locating;
 
   bool get isCheckedIn => hasCheckedIn;
   bool get isCheckedOut => hasCheckedOut;
 
   String? get todayStatus => todayRecord?.status;
-
   String? get checkInTime => _formatTime(todayRecord?.checkInTime);
   String? get checkOutTime => _formatTime(todayRecord?.checkOutTime);
 
@@ -74,7 +59,8 @@ class AttendanceState {
 
   String? get successMessage =>
       status == AttendanceStatus.checkInSuccess ||
-          status == AttendanceStatus.checkOutSuccess
+          status == AttendanceStatus.checkOutSuccess ||
+          status == AttendanceStatus.autoCheckoutSuccess
       ? message
       : null;
 
@@ -119,13 +105,10 @@ class AttendanceState {
   }
 }
 
-// ============================================================
-// AttendanceNotifier
-// ============================================================
 class AttendanceNotifier extends Notifier<AttendanceState> {
   final _cameraService = CameraService();
   final _faceMLService = FaceMLService();
-  final _locationService = LocationService(); // ← NEW
+  final _locationService = LocationService();
 
   CameraController? get cameraController => _cameraService.controller;
 
@@ -145,7 +128,24 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
       await _cameraService.initialize();
       AppLogger.info('✅ Camera ready');
 
+      // Auto-checkout missed records from past days
+      final autoCount = await attendanceRepository.checkForMissedCheckout();
+      if (autoCount > 0) {
+        AppLogger.info('✅ Auto-checked out $autoCount missed record(s)');
+      }
+
       await _loadTodayAttendance();
+
+      // ── Auto-checkout if after 6 PM and still checked in ───
+      // WHY here: employee opens mark attendance after 6 PM
+      // with pending checkout → auto-complete it immediately
+      // → UI detects autoCheckoutSuccess → shows dialog → pops
+      if (state.hasCheckedIn &&
+          !state.hasCheckedOut &&
+          DateTime.now().hour >= 18) {
+        await _autoCheckoutAtSixPm();
+        return; // skip cameraReady — dialog will pop page
+      }
 
       state = state.copyWith(
         status: AttendanceStatus.cameraReady,
@@ -157,6 +157,49 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
         status: AttendanceStatus.error,
         message: 'Initialization failed. Please restart.',
       );
+    }
+  }
+
+  // ── _autoCheckoutAtSixPm() ─────────────────────────────────
+  // PURPOSE: Auto-checkout when employee opens app after 6 PM
+  // with a pending check-in. Uses check_in_time + 8h cap.
+  Future<void> _autoCheckoutAtSixPm() async {
+    try {
+      final checkInTime = state.todayRecord?.checkInTime;
+      final attendanceId = state.attendanceId;
+
+      if (checkInTime == null || attendanceId == null) {
+        AppLogger.error('autoCheckout: missing checkInTime or attendanceId');
+        return;
+      }
+
+      final checkInUtc = DateTime.parse(checkInTime);
+      final autoCheckOutUtc = checkInUtc.add(const Duration(hours: 8));
+      final totalHours = 8.0; // capped at standard workday
+
+      await attendanceRepository.checkOut(
+        attendanceId: attendanceId,
+        checkInTime: checkInTime,
+        lat: null,
+        lng: null,
+      );
+
+      AppLogger.info(
+        '✅ Auto-checkout at 6 PM: $attendanceId | hours: $totalHours',
+      );
+
+      state = state.copyWith(
+        status: AttendanceStatus.autoCheckoutSuccess,
+        message:
+            'Office hours ended at 6:00 PM.\n'
+            '✅ You have been automatically checked out.\n'
+            '⏱ Total: ${totalHours.toStringAsFixed(1)}h logged.',
+        hasCheckedOut: true,
+      );
+    } catch (e, st) {
+      AppLogger.error('autoCheckoutAtSixPm failed', e, st);
+      // WHY not rethrow: non-critical — just go to cameraReady
+      state = state.copyWith(status: AttendanceStatus.cameraReady);
     }
   }
 
@@ -183,19 +226,29 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
   }
 
   // ── markAttendance() ───────────────────────────────────────
-  // FLOW:
-  //   Capture → Extract → Verify → 📍 GPS → Save
-  // GPS only runs on first check-in — not checkout/re-checkin
   Future<void> markAttendance() async {
     if (state.hasCheckedIn && state.hasCheckedOut) {
       await _handleReCheckIn();
       return;
     }
 
-    try {
-      // ── Step 1: Capture image ───────────────────────────────
-      state = state.copyWith(status: AttendanceStatus.detecting, message: null);
+    // ── Block check-in after 6 PM ──────────────────────────
+    // WHY only blocks !hasCheckedIn: checkout must always
+    // be allowed — employee leaving at 7 PM needs to check out
+    if (!state.hasCheckedIn && DateTime.now().hour >= 18) {
+      state = state.copyWith(
+        status: AttendanceStatus.afterOfficeHours,
+        message:
+            'Office hours have ended.\n'
+            'Check-in is not allowed after 6:00 PM.\n'
+            'Contact admin to log attendance manually.',
+      );
+      return;
+    }
 
+    try {
+      // ── Step 1: Capture ────────────────────────────────────
+      state = state.copyWith(status: AttendanceStatus.detecting, message: null);
       final imageFile = await _cameraService.captureImage();
       if (imageFile == null) {
         state = state.copyWith(
@@ -205,13 +258,11 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
         return;
       }
 
-      // ── Step 2: Extract embedding ───────────────────────────
+      // ── Step 2: Extract embedding ──────────────────────────
       state = state.copyWith(status: AttendanceStatus.processing);
-
       final capturedEmbedding = await _faceMLService.extractEmbedding(
         imageFile,
       );
-
       if (capturedEmbedding == null) {
         state = state.copyWith(
           status: AttendanceStatus.error,
@@ -222,9 +273,7 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
 
       // ── Step 3: Fetch stored embedding ─────────────────────
       state = state.copyWith(status: AttendanceStatus.verifying);
-
       final storedEmbedding = await faceRepository.getStoredEmbedding();
-
       if (storedEmbedding == null) {
         state = state.copyWith(
           status: AttendanceStatus.faceNotRegistered,
@@ -233,7 +282,7 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
         return;
       }
 
-      // ── Step 4: Compare embeddings ──────────────────────────
+      // ── Step 4: Compare ────────────────────────────────────
       final cosine = FaceMLService.cosineSimilarity(
         storedEmbedding,
         capturedEmbedding,
@@ -258,9 +307,7 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
         return;
       }
 
-      // ── Step 5: GPS Location (check-in only) ───────────────
-      // WHY after face verify: skip GPS on face mismatch —
-      // saves battery + time. GPS only needed on success.
+      // ── Step 5: GPS (check-in only) ────────────────────────
       if (!state.hasCheckedIn) {
         state = state.copyWith(
           status: AttendanceStatus.locating,
@@ -275,8 +322,6 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
           '${locationResult.message}',
         );
 
-        // WHY block: attendance without location = proxy risk
-        // permissionDenied or GPS error → reject check-in
         if (locationResult.status == LocationStatus.permissionDenied ||
             locationResult.status == LocationStatus.error) {
           state = state.copyWith(
@@ -286,30 +331,27 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
           return;
         }
 
-        // WHY lowercase: DB stores 'present'/'wfh' consistently
         final attendanceStatus = locationResult.status == LocationStatus.present
             ? 'present'
             : 'wfh';
 
-        // ── Step 6: Save Check In ───────────────────────────
+        // ── Step 6a: Save Check In ─────────────────────────
         final response = await attendanceRepository.checkIn(
           confidence: cosine,
           lat: locationResult.lat,
           lng: locationResult.lng,
-          status: attendanceStatus, // ← 'present' or 'wfh'
+          status: attendanceStatus,
         );
         final model = AttendanceModel.fromMap(response);
-
         final distanceText = locationResult.distanceKm != null
             ? '\n📍 ${locationResult.distanceKm!.toStringAsFixed(1)} km from office'
             : '';
 
-        final statusEmoji = attendanceStatus == 'present' ? '🏢' : '🏠';
-
         state = state.copyWith(
           status: AttendanceStatus.checkInSuccess,
           message:
-              'Check-in successful! $statusEmoji\n'
+              'Check-in successful! '
+              '${attendanceStatus == 'present' ? '🏢' : '🏠'}\n'
               '${attendanceStatus == 'present' ? 'Work From Office' : 'Work From Home'}'
               '$distanceText',
           confidence: cosine,
@@ -319,15 +361,27 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
           todayRecord: model,
           attendanceId: response['id'] as String?,
         );
-
         AppLogger.info(
-          '✅ Check-in: ${response['id']} | '
-          'status: $attendanceStatus | late: ${response['is_late']}',
+          '✅ Check-in: ${response['id']} | status: $attendanceStatus',
         );
       } else {
-        // ── Step 6: Check Out ─────────────────────────────────
+        // ── Step 6b: Check Out ─────────────────────────────
+        final checkInTime = state.todayRecord?.checkInTime;
+        final attendanceId = state.attendanceId;
+
+        if (checkInTime == null || attendanceId == null) {
+          AppLogger.error('checkOut: null checkInTime or attendanceId');
+          await _loadTodayAttendance();
+          state = state.copyWith(
+            status: AttendanceStatus.error,
+            message: 'Session expired. Please try again.',
+          );
+          return;
+        }
+
         final response = await attendanceRepository.checkOut(
-          attendanceId: state.attendanceId!,
+          attendanceId: attendanceId,
+          checkInTime: checkInTime,
           lat: null,
           lng: null,
         );
@@ -355,6 +409,20 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
 
   // ── _handleReCheckIn() ─────────────────────────────────────
   Future<void> _handleReCheckIn() async {
+    // ── Block re-check-in after 6 PM ──────────────────────────
+    // WHY: office hours ended — no point re-checking in
+    // Hours would count from 6 PM+ which we don't want
+    if (DateTime.now().hour >= 18) {
+      state = state.copyWith(
+        status: AttendanceStatus.afterOfficeHours,
+        message:
+            'Re-check-in is not allowed after 6:00 PM.\n'
+            'Office hours have ended for today.\n'
+            'See you tomorrow! 👋',
+      );
+      return;
+    }
+
     try {
       state = state.copyWith(status: AttendanceStatus.detecting, message: null);
 
@@ -371,7 +439,6 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
       final capturedEmbedding = await _faceMLService.extractEmbedding(
         imageFile,
       );
-
       if (capturedEmbedding == null) {
         state = state.copyWith(
           status: AttendanceStatus.error,
@@ -382,7 +449,6 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
 
       state = state.copyWith(status: AttendanceStatus.verifying);
       final storedEmbedding = await faceRepository.getStoredEmbedding();
-
       if (storedEmbedding == null) {
         state = state.copyWith(
           status: AttendanceStatus.faceNotRegistered,
@@ -411,8 +477,18 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
         return;
       }
 
+      final attendanceId = state.attendanceId;
+      if (attendanceId == null) {
+        await _loadTodayAttendance();
+        state = state.copyWith(
+          status: AttendanceStatus.error,
+          message: 'Session expired. Please try again.',
+        );
+        return;
+      }
+
       final response = await attendanceRepository.reCheckIn(
-        attendanceId: state.attendanceId!,
+        attendanceId: attendanceId,
       );
       final model = AttendanceModel.fromMap(response);
 
@@ -423,8 +499,7 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
         hasCheckedOut: false,
         todayRecord: model,
       );
-
-      AppLogger.info('✅ Re check-in done: ${response['id']}');
+      AppLogger.info('✅ Re check-in: ${response['id']}');
     } catch (e, st) {
       AppLogger.error('Re check-in failed', e, st);
       state = state.copyWith(
@@ -443,7 +518,11 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
   }
 }
 
+// attendance_provider.dart — last line
+// ✅ autoDispose: provider resets when no widget is watching it
+// WHY: when user logs out → navigates away from attendance page
+// → provider disposes → fresh state on next login
 final attendanceProvider =
-    NotifierProvider<AttendanceNotifier, AttendanceState>(
+    NotifierProvider.autoDispose<AttendanceNotifier, AttendanceState>(
       AttendanceNotifier.new,
     );

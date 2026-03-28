@@ -15,7 +15,16 @@ class HomePage extends ConsumerStatefulWidget {
 
 class _HomePageState extends ConsumerState<HomePage> {
   String? _todayStatus;
-  String? _checkOutTime; // ← NEW: track checkout to know button state
+  String? _checkOutTime;
+  // ── Feature 1: Late badge ──────────────────────────────────
+  // WHY bool not null: is_late is always true/false in DB
+  // default false = not late (safe fallback if DB returns null)
+  bool _isLate = false;
+  // ── Feature 3: Work hours ──────────────────────────────────
+  // WHY nullable: only has value after checkout
+  // null = not checked out yet → don't show hours
+  double? _totalHours;
+
   bool _isLoading = false;
   bool _isChecking = true;
 
@@ -32,6 +41,11 @@ class _HomePageState extends ConsumerState<HomePage> {
         setState(() {
           _todayStatus = record?['status'] as String?;
           _checkOutTime = record?['check_out_time'] as String?;
+          // WHY ?? false: is_late may be null if no record yet
+          _isLate = record?['is_late'] as bool? ?? false;
+          // WHY num→double: Supabase may return int or double
+          // for total_hours — (num) handles both safely
+          _totalHours = (record?['total_hours'] as num?)?.toDouble();
           _isChecking = false;
         });
       }
@@ -40,13 +54,6 @@ class _HomePageState extends ConsumerState<HomePage> {
     }
   }
 
-  // ── Determine button state ────────────────────────────────
-  // WHY enum-like logic: 4 possible states need different UI
-  //
-  //  noRecord   → null status          → show CheckIn + MarkAbsent
-  //  checkedIn  → status set, no cout  → show CheckOut only
-  //  checkedOut → status set, cout set → show ReCheckIn only
-  //  absent     → status = absent      → show nothing
   _AttendanceState get _attendanceState {
     if (_todayStatus == null) return _AttendanceState.noRecord;
     if (_todayStatus == 'absent') return _AttendanceState.absent;
@@ -57,9 +64,6 @@ class _HomePageState extends ConsumerState<HomePage> {
   Future<void> _markAbsent() async {
     final confirm = await showDialog<bool>(
       context: context,
-      // ✅ KEY FIX: useRootNavigator: true → uses Flutter's root
-      // navigator, not GoRouter's navigator — prevents GoRouter
-      // from intercepting Navigator.pop() and triggering auth redirect
       useRootNavigator: true,
       builder: (_) => AlertDialog(
         title: const Text('Mark Absent'),
@@ -69,8 +73,6 @@ class _HomePageState extends ConsumerState<HomePage> {
         ),
         actions: [
           TextButton(
-            // ✅ Navigator.of(context, rootNavigator: true).pop()
-            // ensures dialog closes cleanly without touching GoRouter stack
             onPressed: () =>
                 Navigator.of(context, rootNavigator: true).pop(false),
             child: const Text('Cancel'),
@@ -153,11 +155,13 @@ class _HomePageState extends ConsumerState<HomePage> {
                   ),
                   const SizedBox(height: 32),
 
-                  // ── Status Card (shown if any record exists) ───
+                  // ── Status Card ────────────────────────────────
                   if (_todayStatus != null) ...[
                     _TodayStatusCard(
                       status: _todayStatus!,
                       checkOutTime: _checkOutTime,
+                      isLate: _isLate, // ← Feature 1
+                      totalHours: _totalHours, // ← Feature 3
                     ),
                     const SizedBox(height: 24),
                   ],
@@ -176,20 +180,13 @@ class _HomePageState extends ConsumerState<HomePage> {
                   ),
                   const SizedBox(height: 12),
 
-                  // ── Mark Attendance Button ─────────────────────
-                  // Label + color changes based on state:
-                  // noRecord   → 🟢 Check In
-                  // checkedIn  → 🔵 Check Out
-                  // checkedOut → 🟠 Re-Check In
-                  // absent     → hidden
+                  // ── Attendance Button ──────────────────────────
                   if (state != _AttendanceState.absent)
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 32),
                       child: ElevatedButton.icon(
                         onPressed: () async {
                           await context.push(AppRoutes.markAttendance);
-                          // WHY reload: status may have changed after
-                          // returning from attendance screen
                           _loadTodayStatus();
                         },
                         icon: Icon(_attendanceIcon(state)),
@@ -201,9 +198,7 @@ class _HomePageState extends ConsumerState<HomePage> {
                       ),
                     ),
 
-                  // ── Mark Absent (only when no record yet) ──────
-                  // WHY only noRecord: can't mark absent if
-                  // already checked in or done
+                  // ── Mark Absent ────────────────────────────────
                   if (state == _AttendanceState.noRecord) ...[
                     const SizedBox(height: 12),
                     Padding(
@@ -240,7 +235,6 @@ class _HomePageState extends ConsumerState<HomePage> {
     );
   }
 
-  // ── Button helpers ─────────────────────────────────────────
   String _attendanceLabel(_AttendanceState state) {
     return switch (state) {
       _AttendanceState.noRecord => 'Check In',
@@ -261,25 +255,30 @@ class _HomePageState extends ConsumerState<HomePage> {
 
   Color _attendanceColor(_AttendanceState state) {
     return switch (state) {
-      _AttendanceState.noRecord => AppColors.present, // green
-      _AttendanceState.checkedIn => Colors.blue, // blue
-      _AttendanceState.checkedOut => Colors.orange, // orange
+      _AttendanceState.noRecord => AppColors.present,
+      _AttendanceState.checkedIn => Colors.blue,
+      _AttendanceState.checkedOut => Colors.orange,
       _AttendanceState.absent => Colors.grey,
     };
   }
 }
 
-// ── Attendance State Enum ─────────────────────────────────────
-// WHY enum: 4 clearly named states — much cleaner than
-// multiple bool flags like isCheckedIn, isCheckedOut, etc.
 enum _AttendanceState { noRecord, checkedIn, checkedOut, absent }
 
 // ── _TodayStatusCard ──────────────────────────────────────────
+// UPDATED: Added isLate + totalHours params
 class _TodayStatusCard extends StatelessWidget {
   final String status;
-  final String? checkOutTime; // ← shows check-out time if done
+  final String? checkOutTime;
+  final bool isLate; // ← Feature 1
+  final double? totalHours; // ← Feature 3
 
-  const _TodayStatusCard({required this.status, this.checkOutTime});
+  const _TodayStatusCard({
+    required this.status,
+    this.checkOutTime,
+    this.isLate = false,
+    this.totalHours,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -322,13 +321,62 @@ class _TodayStatusCard extends StatelessWidget {
                   fontWeight: FontWeight.bold,
                 ),
               ),
-              // WHY show checkout time: employee sees when they left
+
+              const SizedBox(height: 4),
+
+              // ── Feature 1: Late Badge ──────────────────────
+              // WHY amber: warning color — not as severe as red
+              // but clearly visible — draws attention
+              if (isLate && status != 'absent')
+                Container(
+                  margin: const EdgeInsets.only(top: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                      color: Colors.amber.withValues(alpha: 0.6),
+                    ),
+                  ),
+                  child: const Text(
+                    '⚠️ Late Arrival',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Colors.amber,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+
+              // ── Feature 3: Work Hours ──────────────────────
+              // WHY only after checkout: total_hours is null
+              // until checkout — showing 0h mid-day is misleading
+              if (totalHours != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    '🕐 Total: ${totalHours!.toStringAsFixed(1)}h worked',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: color,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+
+              // ── Checked out indicator ──────────────────────
               if (checkOutTime != null)
-                Text(
-                  'Checked out ✓',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: color.withValues(alpha: 0.8),
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(
+                    'Checked out ✓',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: color.withValues(alpha: 0.8),
+                    ),
                   ),
                 ),
             ],

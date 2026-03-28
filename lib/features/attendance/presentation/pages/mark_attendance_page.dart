@@ -19,6 +19,7 @@ class _MarkAttendancePageState extends ConsumerState<MarkAttendancePage>
     with SingleTickerProviderStateMixin {
   late AnimationController _scanController;
   late AttendanceNotifier _notifier;
+  bool _dialogShown = false; // WHY: prevent duplicate dialogs
 
   @override
   void initState() {
@@ -40,9 +41,170 @@ class _MarkAttendancePageState extends ConsumerState<MarkAttendancePage>
     super.dispose();
   }
 
+  // ── _showAfterHoursDialog() ────────────────────────────────
+  Future<void> _showAfterHoursDialog(String message) async {
+    if (_dialogShown) return;
+    _dialogShown = true;
+
+    await showDialog(
+      context: context,
+      useRootNavigator: true,
+      barrierDismissible: false,
+      builder: (ctx) {
+        // WHY LayoutBuilder: makes dialog responsive to screen size
+        final screenW = MediaQuery.of(ctx).size.width;
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          // WHY constrained width: prevents overflow on small screens
+          insetPadding: EdgeInsets.symmetric(
+            horizontal: screenW * 0.08,
+            vertical: 24,
+          ),
+          title: const Row(
+            children: [
+              Text('🕕', style: TextStyle(fontSize: 22)),
+              SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  'Office Hours Ended',
+                  style: TextStyle(fontSize: 16),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          // WHY SingleChildScrollView: long messages won't overflow
+          content: SingleChildScrollView(
+            child: Text(
+              message,
+              style: const TextStyle(fontSize: 14, height: 1.5),
+            ),
+          ),
+          actions: [
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () =>
+                    Navigator.of(context, rootNavigator: true).pop(),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+                child: const Text('OK'),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+
+    _dialogShown = false;
+    if (mounted) Navigator.of(context).pop(); // pop camera page
+  }
+
+  // ── _showAutoCheckoutDialog() ──────────────────────────────
+  Future<void> _showAutoCheckoutDialog(String message) async {
+    if (_dialogShown) return;
+    _dialogShown = true;
+
+    await showDialog(
+      context: context,
+      useRootNavigator: true,
+      barrierDismissible: false,
+      builder: (ctx) {
+        final screenW = MediaQuery.of(ctx).size.width;
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          insetPadding: EdgeInsets.symmetric(
+            horizontal: screenW * 0.08,
+            vertical: 24,
+          ),
+          title: const Row(
+            children: [
+              Text('✅', style: TextStyle(fontSize: 22)),
+              SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  'Auto Checked Out',
+                  style: TextStyle(fontSize: 16),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          content: SingleChildScrollView(
+            child: Text(
+              message,
+              style: const TextStyle(fontSize: 14, height: 1.5),
+            ),
+          ),
+          actions: [
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () =>
+                    Navigator.of(context, rootNavigator: true).pop(),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+                child: const Text('OK'),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+
+    _dialogShown = false;
+    if (mounted) Navigator.of(context).pop();
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(attendanceProvider);
+
+    // ── Listen for state changes → dialogs + auto-pop ───────
+    ref.listen<AttendanceState>(attendanceProvider, (prev, next) {
+      if (prev?.status == next.status) return;
+
+      // ── After hours → show dialog (blocks check-in/re-check-in)
+      if (next.status == AttendanceStatus.afterOfficeHours) {
+        _showAfterHoursDialog(
+          next.message ??
+              'Check-in is not allowed after 6:00 PM.\n'
+                  'Office hours are 9:00 AM – 6:00 PM.',
+        );
+      }
+
+      // ── Auto-checkout → show info dialog
+      if (next.status == AttendanceStatus.autoCheckoutSuccess) {
+        _showAutoCheckoutDialog(
+          next.message ??
+              'You have been automatically checked out.\n'
+                  'Have a good evening! 👋',
+        );
+      }
+
+      // ── Success → auto-pop after 2s ─────────────────────────
+      // WHY auto-pop: prevents user staying on camera page
+      // after success. If they tap screen, it would trigger
+      // initialize() which re-checks 6PM condition → unwanted dialog
+      if (next.status == AttendanceStatus.checkInSuccess ||
+          next.status == AttendanceStatus.checkOutSuccess) {
+        Future.delayed(const Duration(seconds: 2), () {
+          if (mounted) Navigator.of(context).pop();
+        });
+      }
+    });
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -61,15 +223,19 @@ class _MarkAttendancePageState extends ConsumerState<MarkAttendancePage>
       body: SafeArea(
         child: Column(
           children: [
-            // ── Compact Status Strip ──────────────────────────
             _CompactStatusStrip(state: state),
-
-            // ── Camera + Overlay ──────────────────────────────
             Expanded(
               flex: 4,
               child: GestureDetector(
                 onTap: () {
-                  if (_isResultState(state.status)) {
+                  if (!_isResultState(state.status)) return;
+                  // WHY pop on success: don't reinitialize — go home
+                  // WHY reinitialize on error: let user retry
+                  if (state.status == AttendanceStatus.checkInSuccess ||
+                      state.status == AttendanceStatus.checkOutSuccess ||
+                      state.status == AttendanceStatus.autoCheckoutSuccess) {
+                    Navigator.of(context).pop();
+                  } else {
                     _notifier.initialize();
                   }
                 },
@@ -85,8 +251,6 @@ class _MarkAttendancePageState extends ConsumerState<MarkAttendancePage>
                 ),
               ),
             ),
-
-            // ── Bottom Controls ───────────────────────────────
             Expanded(flex: 1, child: _buildControls(state)),
           ],
         ),
@@ -94,7 +258,6 @@ class _MarkAttendancePageState extends ConsumerState<MarkAttendancePage>
     );
   }
 
-  // ── _buildCamera() ─────────────────────────────────────────
   Widget _buildCamera(AttendanceState state) {
     final controller = _notifier.cameraController;
 
@@ -124,7 +287,8 @@ class _MarkAttendancePageState extends ConsumerState<MarkAttendancePage>
             painter: FaceOverlayPainter(
               faceDetected:
                   state.status == AttendanceStatus.checkInSuccess ||
-                  state.status == AttendanceStatus.checkOutSuccess,
+                  state.status == AttendanceStatus.checkOutSuccess ||
+                  state.status == AttendanceStatus.autoCheckoutSuccess,
               animationValue: _scanController.value,
             ),
             child: const SizedBox.expand(),
@@ -135,11 +299,8 @@ class _MarkAttendancePageState extends ConsumerState<MarkAttendancePage>
     );
   }
 
-  // ── _buildStatusChip() ─────────────────────────────────────
-  // CHANGE: Added locating case for GPS feedback
   Widget _buildStatusChip(AttendanceState state) {
     final isCheckInAction = !state.hasCheckedIn || state.hasCheckedOut;
-
     String msg = isCheckInAction ? 'Ready to check in' : 'Ready to check out';
     Color color = Colors.white70;
 
@@ -156,11 +317,17 @@ class _MarkAttendancePageState extends ConsumerState<MarkAttendancePage>
         msg = '🔐 Verifying identity...';
         color = AppColors.primary;
         break;
-      // WHY locating: user sees exactly what's happening —
-      // GPS can take 3-5 seconds, need clear feedback
       case AttendanceStatus.locating:
         msg = '📍 Getting your location...';
         color = Colors.tealAccent;
+        break;
+      case AttendanceStatus.afterOfficeHours:
+        msg = '🕕 Check-in blocked after 6 PM';
+        color = Colors.red;
+        break;
+      case AttendanceStatus.autoCheckoutSuccess:
+        msg = '✅ Auto checked out at 6 PM';
+        color = Colors.green;
         break;
       default:
         break;
@@ -185,13 +352,12 @@ class _MarkAttendancePageState extends ConsumerState<MarkAttendancePage>
     ).animate(key: ValueKey(state.status)).fadeIn(duration: 300.ms);
   }
 
-  // ── _buildControls() ───────────────────────────────────────
   Widget _buildControls(AttendanceState state) {
     final isBusy =
         state.status == AttendanceStatus.detecting ||
         state.status == AttendanceStatus.processing ||
         state.status == AttendanceStatus.verifying ||
-        state.status == AttendanceStatus.locating; // ← NEW
+        state.status == AttendanceStatus.locating;
 
     final canMark = state.status == AttendanceStatus.cameraReady;
     final isCheckInAction = !state.hasCheckedIn || state.hasCheckedOut;
@@ -205,7 +371,6 @@ class _MarkAttendancePageState extends ConsumerState<MarkAttendancePage>
     final buttonIcon = isCheckInAction
         ? Icons.login_rounded
         : Icons.logout_rounded;
-
     final buttonColor = isCheckInAction ? Colors.green : Colors.red;
 
     final hintText = state.hasCheckedIn && !state.hasCheckedOut
@@ -242,31 +407,25 @@ class _MarkAttendancePageState extends ConsumerState<MarkAttendancePage>
     );
   }
 
-  // ── _isResultState() ───────────────────────────────────────
   bool _isResultState(AttendanceStatus status) =>
       status == AttendanceStatus.checkInSuccess ||
       status == AttendanceStatus.checkOutSuccess ||
+      status == AttendanceStatus.autoCheckoutSuccess ||
       status == AttendanceStatus.faceMismatch ||
       status == AttendanceStatus.faceNotRegistered ||
       status == AttendanceStatus.alreadyCheckedOut ||
+      status == AttendanceStatus.afterOfficeHours ||
       status == AttendanceStatus.error;
 }
 
-// ============================================================
-// _CompactStatusStrip
-// CHANGE: isWFO now uses todayStatus from DB ('present'/'wfh')
-// instead of hasCheckedIn which was always true after check-in
-// ============================================================
+// ── _CompactStatusStrip ───────────────────────────────────────
 class _CompactStatusStrip extends StatelessWidget {
   final AttendanceState state;
   const _CompactStatusStrip({required this.state});
 
   @override
   Widget build(BuildContext context) {
-    // WHY todayStatus: real DB value — 'present' = office, 'wfh' = home
-    // Previously used hasCheckedIn which was always true = always showed WFO
-    final isWFO = state.todayStatus?.toLowerCase() == 'present'; // ← FIXED
-
+    final isWFO = state.todayStatus?.toLowerCase() == 'present';
     final workModeEmoji = isWFO ? '🏢' : '🏠';
     final workModeText = isWFO ? 'Work From Office' : 'Work From Home';
     final workModeColor = isWFO ? Colors.green : Colors.blue;
@@ -286,7 +445,6 @@ class _CompactStatusStrip extends StatelessWidget {
           padding: EdgeInsets.symmetric(horizontal: hPad, vertical: vPad),
           child: Row(
             children: [
-              // ── First In ──────────────────────────────────
               Flexible(
                 flex: 2,
                 child: _StripItem(
@@ -297,10 +455,7 @@ class _CompactStatusStrip extends StatelessWidget {
                   screenWidth: w,
                 ),
               ),
-
               _divider(),
-
-              // ── Last Out ──────────────────────────────────
               Flexible(
                 flex: 2,
                 child: _StripItem(
@@ -311,10 +466,7 @@ class _CompactStatusStrip extends StatelessWidget {
                   screenWidth: w,
                 ),
               ),
-
               _divider(),
-
-              // ── Total Hours ───────────────────────────────
               Flexible(
                 flex: 2,
                 child: _StripItem(
@@ -327,10 +479,7 @@ class _CompactStatusStrip extends StatelessWidget {
                   screenWidth: w,
                 ),
               ),
-
               _divider(),
-
-              // ── WFO/WFH + Late badges ─────────────────────
               Flexible(
                 flex: 4,
                 child: Row(
@@ -369,7 +518,6 @@ class _CompactStatusStrip extends StatelessWidget {
                                     fontWeight: FontWeight.w700,
                                     color: workModeColor,
                                     fontFamily: 'Poppins',
-                                    letterSpacing: 0.2,
                                   ),
                                 ),
                               ],
@@ -377,7 +525,6 @@ class _CompactStatusStrip extends StatelessWidget {
                           ),
                         ),
                       ),
-
                     if (isDataLoaded && state.isLate) ...[
                       const SizedBox(width: 8),
                       Flexible(
@@ -409,7 +556,6 @@ class _CompactStatusStrip extends StatelessWidget {
                                     fontWeight: FontWeight.w700,
                                     color: Colors.orange,
                                     fontFamily: 'Poppins',
-                                    letterSpacing: 0.2,
                                   ),
                                 ),
                               ],
@@ -436,9 +582,6 @@ class _CompactStatusStrip extends StatelessWidget {
   );
 }
 
-// ============================================================
-// _StripItem — unchanged
-// ============================================================
 class _StripItem extends StatelessWidget {
   final IconData icon;
   final Color iconColor;
