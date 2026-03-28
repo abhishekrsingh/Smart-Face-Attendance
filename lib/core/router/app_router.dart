@@ -12,7 +12,7 @@
 // userRoleProvider — any change triggers redirect re-check.
 //
 // WHY StatefulShellRoute: each tab keeps its own navigation
-// stack alive — switching tabs doesn't reload pages.
+// stack alive — switching tabs doesn't reload pages or lose state.
 // ============================================================
 
 import 'package:flutter/material.dart';
