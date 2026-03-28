@@ -26,9 +26,51 @@ class AttendanceRepository {
     }
   }
 
+  // ── getMonthlyAttendance() ──────────────────────────────────
+  // PURPOSE: Employee's own attendance for a full month
+  // WHY month param: history screen navigates between months
+  // WHY userId from currentUser: employee sees only their own
+  Future<List<Map<String, dynamic>>> getMonthlyAttendance(
+    DateTime month,
+  ) async {
+    final userId = _client.auth.currentUser?.id;
+    if (userId == null) return [];
+
+    // First and last day of the given month
+    final firstDay = DateTime(month.year, month.month, 1);
+    final lastDay = DateTime(month.year, month.month + 1, 0);
+
+    final firstStr = _localDateString(firstDay);
+    final lastStr = _localDateString(lastDay);
+
+    try {
+      final response = await _client
+          .from('attendance')
+          .select(
+            'id, date, status, check_in_time, check_out_time, '
+            'is_late, total_hours',
+          )
+          .eq('user_id', userId)
+          .gte('date', firstStr)
+          .lte('date', lastStr)
+          .order('date', ascending: false);
+
+      AppLogger.debug(
+        'Monthly: ${response.length} records | $firstStr → $lastStr',
+      );
+      return List<Map<String, dynamic>>.from(response);
+    } on PostgrestException catch (e) {
+      AppLogger.error('getMonthlyAttendance failed: ${e.message}');
+      rethrow;
+    } catch (e, st) {
+      AppLogger.error('getMonthlyAttendance error', e, st);
+      rethrow;
+    }
+  }
+
   // ── checkForMissedCheckout() ────────────────────────────────
-  // Rule 1: Past day checked in, no checkout → auto-checkout at +8h
-  // Rule 2: Same day, 8h elapsed, no checkout → auto-checkout at +8h
+  // Rule 1: Past day checked in, no checkout → auto-checkout +8h
+  // Rule 2: Same day, 8h elapsed, no checkout → auto-checkout +8h
   Future<int> checkForMissedCheckout() async {
     final userId = _client.auth.currentUser?.id;
     if (userId == null) return 0;
@@ -61,7 +103,7 @@ class AttendanceRepository {
 
         autoCount++;
         AppLogger.info(
-          '✅ Auto-checkout (past day): ${record['id']} | ${record['date']}',
+          '✅ Auto-checkout (past): ${record['id']} | ${record['date']}',
         );
       }
 
@@ -123,21 +165,19 @@ class AttendanceRepository {
     final isLate = nowLocal.hour >= 9;
 
     try {
-      final data = {
-        'user_id': userId,
-        'date': today,
-        'check_in_time': nowUtc.toIso8601String(),
-        'status': status,
-        'is_late': isLate,
-        'location_lat': lat,
-        'location_lng': lng,
-        'created_at': nowUtc.toIso8601String(),
-        'updated_at': nowUtc.toIso8601String(),
-      };
-
       final response = await _client
           .from('attendance')
-          .insert(data)
+          .insert({
+            'user_id': userId,
+            'date': today,
+            'check_in_time': nowUtc.toIso8601String(),
+            'status': status,
+            'is_late': isLate,
+            'location_lat': lat,
+            'location_lng': lng,
+            'created_at': nowUtc.toIso8601String(),
+            'updated_at': nowUtc.toIso8601String(),
+          })
           .select()
           .single();
 
@@ -155,10 +195,9 @@ class AttendanceRepository {
   }
 
   // ── checkOut() ─────────────────────────────────────────────
-  // FIX: Accept checkInTime as param — no extra DB fetch needed
-  // WHY: caller has check_in_time in state.todayRecord already
-  // Old .single() fetch was crashing with PGRST116 (0 rows)
-  // ── checkOut() ─────────────────────────────────────────────
+  // FIX: Accept checkInTime as param — no extra DB fetch
+  // WHY: caller has check_in_time in state already
+  // Cap checkout at 6 PM — hours after office time don't count
   Future<Map<String, dynamic>> checkOut({
     required String attendanceId,
     required String checkInTime,
@@ -167,10 +206,8 @@ class AttendanceRepository {
   }) async {
     final nowLocal = DateTime.now();
 
-    // ── Cap checkout at 6 PM ───────────────────────────────────
-    // WHY: office hours end at 6 PM — hours after that
-    // don't count. If checkout is at 7 PM → saved as 6 PM.
-    // If checkout is at 5 PM → saved as 5 PM (no change)
+    // ── Cap at 6 PM ─────────────────────────────────────────
+    // WHY: office ends at 6 PM — no hours counted after that
     final sixPmLocal = DateTime(
       nowLocal.year,
       nowLocal.month,
@@ -178,15 +215,12 @@ class AttendanceRepository {
       18,
       0,
     );
-    final effectiveLocal = nowLocal.isAfter(sixPmLocal)
-        ? sixPmLocal // ← cap at 6 PM
-        : nowLocal; // ← use actual time
+    final effectiveLocal = nowLocal.isAfter(sixPmLocal) ? sixPmLocal : nowLocal;
     final effectiveUtc = effectiveLocal.toUtc();
 
     try {
       final checkInUtc = DateTime.parse(checkInTime);
       final rawHours = effectiveUtc.difference(checkInUtc).inMinutes / 60.0;
-      // WHY max 8: prevent negative or huge numbers from bad data
       final totalHours = rawHours.clamp(0.0, 8.0);
 
       final response = await _client
@@ -203,11 +237,11 @@ class AttendanceRepository {
           .maybeSingle();
 
       if (response == null) {
-        throw Exception('Attendance record not found — ID: $attendanceId');
+        throw Exception('Record not found — ID: $attendanceId');
       }
 
       AppLogger.info(
-        '✅ Check-out done. Effective: ${effectiveLocal.hour}:${effectiveLocal.minute.toString().padLeft(2, '0')} | Total: ${totalHours.toStringAsFixed(2)}h',
+        '✅ Check-out: ${effectiveLocal.hour}:${effectiveLocal.minute.toString().padLeft(2, '0')} | ${totalHours.toStringAsFixed(2)}h',
       );
       return response;
     } on PostgrestException catch (e) {
@@ -234,10 +268,10 @@ class AttendanceRepository {
           .maybeSingle();
 
       if (response == null) {
-        throw Exception('Attendance record not found — ID: $attendanceId');
+        throw Exception('Record not found — ID: $attendanceId');
       }
 
-      AppLogger.info('✅ Re check-in done: $attendanceId');
+      AppLogger.info('✅ Re check-in: $attendanceId');
       return response;
     } on PostgrestException catch (e) {
       AppLogger.error('Re check-in failed: ${e.message}');
@@ -263,7 +297,6 @@ class AttendanceRepository {
           .maybeSingle();
 
       if (existing != null) {
-        AppLogger.info('Attendance already marked for today');
         throw Exception('You have already marked attendance for today.');
       }
 
@@ -276,7 +309,7 @@ class AttendanceRepository {
         'updated_at': nowUtc.toIso8601String(),
       });
 
-      AppLogger.info('✅ Marked absent for: $today');
+      AppLogger.info('✅ Marked absent: $today');
     } on PostgrestException catch (e) {
       AppLogger.error('Mark absent failed: ${e.message}');
       rethrow;
@@ -309,12 +342,14 @@ class AttendanceRepository {
     }
   }
 
-  String _localDateString() {
-    final now = DateTime.now();
-    final y = now.year;
-    final m = now.month.toString().padLeft(2, '0');
-    final d = now.day.toString().padLeft(2, '0');
-    return '$y-$m-$d';
+  // ── _localDateString() ─────────────────────────────────────
+  // WHY optional param: works for today (no param)
+  // AND any specific date (pass DateTime) — used by monthly fetch
+  String _localDateString([DateTime? date]) {
+    final d = date ?? DateTime.now();
+    return '${d.year}-'
+        '${d.month.toString().padLeft(2, '0')}-'
+        '${d.day.toString().padLeft(2, '0')}';
   }
 }
 

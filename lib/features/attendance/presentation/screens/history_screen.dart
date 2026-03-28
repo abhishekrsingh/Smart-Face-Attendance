@@ -1,14 +1,8 @@
-// ============================================================
-// HistoryScreen
-// PURPOSE: Displays last 7 days of attendance as a scrollable
-// card list. Each card shows date, status, check-in/out times,
-// late badge, and total hours worked.
-// ============================================================
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../providers/history_provider.dart';
-import '../../data/models/attendance_model.dart';
+import 'package:intl/intl.dart';
+import 'package:table_calendar/table_calendar.dart';
+import '../../data/attendance_repository.dart';
 
 class HistoryScreen extends ConsumerStatefulWidget {
   const HistoryScreen({super.key});
@@ -18,144 +12,865 @@ class HistoryScreen extends ConsumerStatefulWidget {
 }
 
 class _HistoryScreenState extends ConsumerState<HistoryScreen> {
+  DateTime _focusedMonth = DateTime(DateTime.now().year, DateTime.now().month);
+  DateTime? _selectedDay;
+
+  List<Map<String, dynamic>> _records = [];
+  bool _isLoading = true;
+  String? _error;
+
+  final ScrollController _scrollController = ScrollController();
+  final Map<String, Map<String, dynamic>> _recordMap = {};
+
   @override
   void initState() {
     super.initState();
-    // WHY microtask: Calling provider inside initState directly can
-    // cause "setState during build" error — microtask defers safely
-    Future.microtask(() => ref.read(historyProvider.notifier).loadHistory());
+    _selectedDay = DateTime.now();
+    _loadHistory();
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadHistory() async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+    try {
+      final data = await attendanceRepository.getMonthlyAttendance(
+        _focusedMonth,
+      );
+      if (mounted) {
+        final map = <String, Map<String, dynamic>>{};
+        for (final r in data) map[r['date'] as String] = r;
+        setState(() {
+          _records = data;
+          _recordMap
+            ..clear()
+            ..addAll(map);
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = e.toString();
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  // ── Month navigation ────────────────────────────────────────
+  bool get _canGoNext {
+    final now = DateTime.now();
+    return _focusedMonth.year < now.year ||
+        (_focusedMonth.year == now.year && _focusedMonth.month < now.month);
+  }
+
+  void _previousMonth() {
+    setState(() {
+      _focusedMonth = DateTime(_focusedMonth.year, _focusedMonth.month - 1);
+      _selectedDay = null;
+    });
+    _loadHistory();
+  }
+
+  void _nextMonth() {
+    if (!_canGoNext) return;
+    setState(() {
+      _focusedMonth = DateTime(_focusedMonth.year, _focusedMonth.month + 1);
+      _selectedDay = null;
+    });
+    _loadHistory();
+  }
+
+  // ── Helpers ─────────────────────────────────────────────────
+  String _dateStr(DateTime d) =>
+      '${d.year}-'
+      '${d.month.toString().padLeft(2, '0')}-'
+      '${d.day.toString().padLeft(2, '0')}';
+
+  Map<String, dynamic>? _recordFor(DateTime day) => _recordMap[_dateStr(day)];
+
+  Color _dotColor(DateTime day) {
+    final r = _recordFor(day);
+    if (r == null) return Colors.transparent;
+    return switch (r['status'] as String?) {
+      'present' => Colors.green,
+      'wfh' => Colors.blue,
+      'absent' => Colors.red,
+      _ => Colors.grey,
+    };
+  }
+
+  // ── Open calendar bottom sheet ──────────────────────────────
+  // WHY bottom sheet not inline: keeps list visible at all times
+  // calendar is just a picker — not the main content
+  Future<void> _showCalendarSheet() async {
+    // local focused day inside sheet — doesn't affect page until confirmed
+    DateTime sheetFocused = _focusedMonth;
+    DateTime? sheetSelected = _selectedDay;
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      useRootNavigator: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setSheetState) {
+            return Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // ── Sheet drag handle ─────────────────────
+                  Container(
+                    width: 40,
+                    height: 4,
+                    margin: const EdgeInsets.only(bottom: 16),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.withValues(alpha: 0.3),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+
+                  // ── Header ───────────────────────────────
+                  Row(
+                    children: [
+                      const Icon(Icons.calendar_month_rounded, size: 20),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'Pick a Date',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        icon: const Icon(Icons.close_rounded),
+                        onPressed: () => Navigator.of(ctx).pop(),
+                      ),
+                    ],
+                  ),
+
+                  const Divider(),
+
+                  // ── TableCalendar ─────────────────────────
+                  TableCalendar(
+                    firstDay: DateTime(2024, 1, 1),
+                    lastDay: DateTime.now(),
+                    focusedDay: sheetFocused,
+
+                    selectedDayPredicate: (day) =>
+                        sheetSelected != null && isSameDay(day, sheetSelected!),
+
+                    availableGestures: AvailableGestures.horizontalSwipe,
+                    pageAnimationEnabled: true,
+                    pageAnimationCurve: Curves.easeInOut,
+                    pageAnimationDuration: const Duration(milliseconds: 300),
+
+                    calendarFormat: CalendarFormat.month,
+                    availableCalendarFormats: const {
+                      CalendarFormat.month: 'Month',
+                    },
+
+                    onPageChanged: (focused) {
+                      final now = DateTime.now();
+                      if (focused.isAfter(DateTime(now.year, now.month))) {
+                        return;
+                      }
+                      setSheetState(() => sheetFocused = focused);
+                    },
+
+                    onDaySelected: (selected, focused) {
+                      if (selected.isAfter(DateTime.now())) return;
+                      setSheetState(() {
+                        sheetSelected = selected;
+                        sheetFocused = focused;
+                      });
+
+                      // ── Apply + close ───────────────────────
+                      // WHY delay: let selection animate before closing
+                      Future.delayed(const Duration(milliseconds: 150), () {
+                        if (ctx.mounted) Navigator.of(ctx).pop();
+
+                        // Update page state
+                        final newMonth = DateTime(
+                          selected.year,
+                          selected.month,
+                        );
+                        final monthChanged =
+                            newMonth.year != _focusedMonth.year ||
+                            newMonth.month != _focusedMonth.month;
+
+                        setState(() {
+                          _selectedDay = selected;
+                          _focusedMonth = newMonth;
+                        });
+
+                        // Reload if month changed
+                        if (monthChanged) {
+                          _loadHistory().then((_) => _scrollToDay(selected));
+                        } else {
+                          _scrollToDay(selected);
+                        }
+                      });
+                    },
+
+                    calendarStyle: CalendarStyle(
+                      todayDecoration: BoxDecoration(
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.primary.withValues(alpha: 0.2),
+                        shape: BoxShape.circle,
+                      ),
+                      todayTextStyle: TextStyle(
+                        color: Theme.of(context).colorScheme.primary,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      selectedDecoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.primary,
+                        shape: BoxShape.circle,
+                      ),
+                      selectedTextStyle: const TextStyle(color: Colors.white),
+                      outsideDaysVisible: false,
+                      markersMaxCount: 1,
+                      markerDecoration: const BoxDecoration(),
+                      markerMargin: EdgeInsets.zero,
+                      cellMargin: const EdgeInsets.all(4),
+                      weekendTextStyle: TextStyle(
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.onSurface.withValues(alpha: 0.5),
+                      ),
+                      disabledTextStyle: TextStyle(
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.onSurface.withValues(alpha: 0.2),
+                      ),
+                    ),
+
+                    // ── Colored dots per day ─────────────────
+                    calendarBuilders: CalendarBuilders(
+                      defaultBuilder: (ctx, day, _) => _calendarDayCell(
+                        ctx,
+                        day,
+                        isSelected: false,
+                        isToday: false,
+                      ),
+                      todayBuilder: (ctx, day, _) => _calendarDayCell(
+                        ctx,
+                        day,
+                        isSelected: false,
+                        isToday: true,
+                      ),
+                      selectedBuilder: (ctx, day, _) => _calendarDayCell(
+                        ctx,
+                        day,
+                        isSelected: true,
+                        isToday: false,
+                      ),
+                      disabledBuilder: (ctx, day, _) => Center(
+                        child: Text(
+                          '${day.day}',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: Theme.of(
+                              ctx,
+                            ).colorScheme.onSurface.withValues(alpha: 0.2),
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    headerStyle: HeaderStyle(
+                      formatButtonVisible: false,
+                      titleCentered: true,
+                      titleTextStyle: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      leftChevronIcon: Icon(
+                        Icons.chevron_left_rounded,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                      rightChevronIcon: Icon(
+                        Icons.chevron_right_rounded,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                    ),
+
+                    daysOfWeekStyle: DaysOfWeekStyle(
+                      weekdayStyle: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.onSurface.withValues(alpha: 0.6),
+                      ),
+                      weekendStyle: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.onSurface.withValues(alpha: 0.35),
+                      ),
+                    ),
+                  ),
+
+                  // ── Color legend ─────────────────────────
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      _LegendDot(color: Colors.green, label: 'Present'),
+                      const SizedBox(width: 16),
+                      _LegendDot(color: Colors.blue, label: 'WFH'),
+                      const SizedBox(width: 16),
+                      _LegendDot(color: Colors.red, label: 'Absent'),
+                      const SizedBox(width: 16),
+                      _LegendDot(color: Colors.grey, label: 'No Record'),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  // ── Scroll list to tapped day ────────────────────────────────
+  void _scrollToDay(DateTime day) {
+    final entries = _allDaysInMonth;
+    final idx = entries.indexWhere(
+      (e) =>
+          e.date.day == day.day &&
+          e.date.month == day.month &&
+          e.date.year == day.year,
+    );
+    if (idx < 0) return;
+    // Delay scroll until list rebuilds after setState
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          idx * 84.0,
+          duration: const Duration(milliseconds: 400),
+          curve: Curves.easeInOut,
+        );
+      }
+    });
+  }
+
+  // ── Calendar day cell with colored dot ──────────────────────
+  Widget _calendarDayCell(
+    BuildContext ctx,
+    DateTime day, {
+    required bool isSelected,
+    required bool isToday,
+  }) {
+    final dotColor = _dotColor(day);
+    final hasDot = dotColor != Colors.transparent;
+    final colorScheme = Theme.of(ctx).colorScheme;
+
+    Color? bgColor;
+    Color textColor = colorScheme.onSurface;
+
+    if (isSelected) {
+      bgColor = colorScheme.primary;
+      textColor = Colors.white;
+    } else if (isToday) {
+      bgColor = colorScheme.primary.withValues(alpha: 0.15);
+      textColor = colorScheme.primary;
+    }
+
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 32,
+            height: 32,
+            decoration: BoxDecoration(color: bgColor, shape: BoxShape.circle),
+            alignment: Alignment.center,
+            child: Text(
+              '${day.day}',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: isToday || isSelected
+                    ? FontWeight.bold
+                    : FontWeight.normal,
+                color: textColor,
+              ),
+            ),
+          ),
+          const SizedBox(height: 2),
+          Container(
+            width: 5,
+            height: 5,
+            decoration: BoxDecoration(
+              color: hasDot
+                  ? (isSelected ? Colors.white70 : dotColor)
+                  : Colors.transparent,
+              shape: BoxShape.circle,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── All days for list ────────────────────────────────────────
+  List<_DayEntry> get _allDaysInMonth {
+    final now = DateTime.now();
+    final lastDay = DateTime(
+      _focusedMonth.year,
+      _focusedMonth.month + 1,
+      0,
+    ).day;
+    final entries = <_DayEntry>[];
+    for (int d = lastDay; d >= 1; d--) {
+      final date = DateTime(_focusedMonth.year, _focusedMonth.month, d);
+      if (date.isAfter(now)) continue;
+      entries.add(_DayEntry(date: date, record: _recordFor(date)));
+    }
+    return entries;
+  }
+
+  int get _presentCount =>
+      _records.where((r) => r['status'] == 'present').length;
+  int get _wfhCount => _records.where((r) => r['status'] == 'wfh').length;
+  int get _absentCount => _records.where((r) => r['status'] == 'absent').length;
+  int get _lateCount => _records.where((r) => r['is_late'] == true).length;
+
+  bool get _isCurrentMonth {
+    final now = DateTime.now();
+    return _focusedMonth.year == now.year && _focusedMonth.month == now.month;
   }
 
   @override
   Widget build(BuildContext context) {
-    // Watch state — rebuilds automatically when state changes
-    final state = ref.watch(historyProvider);
-
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Attendance History'),
-        actions: [
-          // Manual refresh button in top-right
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Refresh',
-            onPressed: () => ref.read(historyProvider.notifier).loadHistory(),
-          ),
-        ],
-      ),
-
-      body: Builder(
-        builder: (_) {
-          // ── State 1: Loading ──────────────────────────────────
-          if (state.isLoading) {
-            return const Center(child: CircularProgressIndicator());
-          }
-
-          // ── State 2: Error ────────────────────────────────────
-          if (state.error != null) {
-            return Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.error_outline, size: 48, color: Colors.red),
-                  const SizedBox(height: 12),
-                  Text(
-                    state.error!,
-                    style: const TextStyle(color: Colors.red),
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 16),
-                  ElevatedButton.icon(
-                    onPressed: () =>
-                        ref.read(historyProvider.notifier).loadHistory(),
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('Retry'),
-                  ),
-                ],
-              ),
-            );
-          }
-
-          // ── State 3: Empty ────────────────────────────────────
-          if (state.records.isEmpty) {
-            return const Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.event_busy, size: 64, color: Colors.grey),
-                  SizedBox(height: 12),
-                  Text(
-                    'No attendance records found.',
-                    style: TextStyle(color: Colors.grey),
-                  ),
-                ],
-              ),
-            );
-          }
-
-          // ── State 4: Records loaded — show list ───────────────
-          // RefreshIndicator = pull-to-refresh gesture support
-          return RefreshIndicator(
-            onRefresh: () => ref.read(historyProvider.notifier).loadHistory(),
-            child: ListView.separated(
-              padding: const EdgeInsets.all(16),
-              itemCount: state.records.length,
-              // Adds gap between cards without putting it inside itemBuilder
-              separatorBuilder: (_, __) => const SizedBox(height: 10),
-              itemBuilder: (ctx, i) =>
-                  _AttendanceCard(record: state.records[i]),
-            ),
-          );
+      appBar: AppBar(title: const Text('My Attendance'), centerTitle: true),
+      body: GestureDetector(
+        // WHY: swipe anywhere on body switches month
+        onHorizontalDragEnd: (d) {
+          if (d.primaryVelocity == null) return;
+          if (d.primaryVelocity! < -100) _nextMonth();
+          if (d.primaryVelocity! > 100) _previousMonth();
         },
+        child: Column(
+          children: [
+            // ── Compact Month Bar (like admin screen) ──────────
+            _MonthBar(
+              month: _focusedMonth,
+              isCurrentMonth: _isCurrentMonth,
+              canGoNext: _canGoNext,
+              onPrevious: _previousMonth,
+              onNext: _nextMonth,
+              // ← calendar icon tap → bottom sheet
+              onCalendarTap: _showCalendarSheet,
+            ),
+
+            // ── Summary Bar ────────────────────────────────────
+            if (!_isLoading && _error == null)
+              _MonthlySummary(
+                present: _presentCount,
+                wfh: _wfhCount,
+                absent: _absentCount,
+                late: _lateCount,
+              ),
+
+            // ── Day List ───────────────────────────────────────
+            Expanded(
+              child: _isLoading
+                  ? const Center(child: CircularProgressIndicator())
+                  : _error != null
+                  ? _ErrorView(error: _error!, onRetry: _loadHistory)
+                  : _allDaysInMonth.isEmpty
+                  ? const Center(
+                      child: Text(
+                        'No records this month',
+                        style: TextStyle(color: Colors.grey),
+                      ),
+                    )
+                  : RefreshIndicator(
+                      onRefresh: _loadHistory,
+                      child: ListView.builder(
+                        controller: _scrollController,
+                        padding: const EdgeInsets.only(bottom: 16),
+                        itemCount: _allDaysInMonth.length,
+                        itemBuilder: (_, i) {
+                          final e = _allDaysInMonth[i];
+                          return _DayTile(
+                            entry: e,
+                            isSelected:
+                                _selectedDay != null &&
+                                isSameDay(e.date, _selectedDay!),
+                          );
+                        },
+                      ),
+                    ),
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
-// ============================================================
-// _AttendanceCard
-// PURPOSE: Single row card showing one day's attendance info —
-// date badge, status chip, late chip, times, total hours.
-// ============================================================
-class _AttendanceCard extends StatelessWidget {
-  final AttendanceModel record;
-  const _AttendanceCard({required this.record});
+// ── _MonthBar ─────────────────────────────────────────────────
+// PURPOSE: Compact top bar — same style as admin _DatePickerBar
+// Shows month + year, prev/next arrows, calendar icon to pick
+class _MonthBar extends StatelessWidget {
+  final DateTime month;
+  final bool isCurrentMonth;
+  final bool canGoNext;
+  final VoidCallback onPrevious;
+  final VoidCallback onNext;
+  final VoidCallback onCalendarTap;
+
+  const _MonthBar({
+    required this.month,
+    required this.isCurrentMonth,
+    required this.canGoNext,
+    required this.onPrevious,
+    required this.onNext,
+    required this.onCalendarTap,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        border: Border(
+          bottom: BorderSide(
+            color: Theme.of(
+              context,
+            ).colorScheme.outlineVariant.withValues(alpha: 0.4),
+          ),
+        ),
+      ),
+      child: Row(
+        children: [
+          // ◀ Prev
+          IconButton(
+            icon: const Icon(Icons.chevron_left_rounded),
+            onPressed: onPrevious,
+            style: IconButton.styleFrom(
+              backgroundColor: Theme.of(
+                context,
+              ).colorScheme.surfaceContainerHighest,
+            ),
+          ),
+
+          // ── Month + calendar tap ─────────────────────────
+          Expanded(
+            child: GestureDetector(
+              onTap: onCalendarTap,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 8,
+                ),
+                decoration: BoxDecoration(
+                  color: Theme.of(
+                    context,
+                  ).colorScheme.primaryContainer.withValues(alpha: 0.4),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.primary.withValues(alpha: 0.3),
+                  ),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.calendar_month_rounded,
+                      size: 16,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                    const SizedBox(width: 8),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          isCurrentMonth ? 'Current Month' : 'Viewing',
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.primary.withValues(alpha: 0.7),
+                          ),
+                        ),
+                        Text(
+                          DateFormat('MMMM yyyy').format(month),
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const Spacer(),
+                    Icon(
+                      Icons.arrow_drop_down_rounded,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+
+          // ▶ Next (greyed on current month)
+          IconButton(
+            icon: Icon(
+              Icons.chevron_right_rounded,
+              color: canGoNext ? null : Colors.grey.withValues(alpha: 0.3),
+            ),
+            onPressed: canGoNext ? onNext : null,
+            style: IconButton.styleFrom(
+              backgroundColor: Theme.of(
+                context,
+              ).colorScheme.surfaceContainerHighest,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── _LegendDot ────────────────────────────────────────────────
+class _LegendDot extends StatelessWidget {
+  final Color color;
+  final String label;
+  const _LegendDot({required this.color, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 4),
+        Text(label, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+      ],
+    );
+  }
+}
+
+// ── _MonthlySummary ───────────────────────────────────────────
+class _MonthlySummary extends StatelessWidget {
+  final int present;
+  final int wfh;
+  final int absent;
+  final int late;
+
+  const _MonthlySummary({
+    required this.present,
+    required this.wfh,
+    required this.absent,
+    required this.late,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceAround,
+        children: [
+          _SummaryChip(
+            label: 'Present',
+            count: present,
+            color: Colors.green,
+            emoji: '🏢',
+          ),
+          _SummaryChip(
+            label: 'WFH',
+            count: wfh,
+            color: Colors.blue,
+            emoji: '🏠',
+          ),
+          _SummaryChip(
+            label: 'Absent',
+            count: absent,
+            color: Colors.red,
+            emoji: '❌',
+          ),
+          _SummaryChip(
+            label: 'Late',
+            count: late,
+            color: Colors.orange,
+            emoji: '⚠️',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SummaryChip extends StatelessWidget {
+  final String label;
+  final int count;
+  final Color color;
+  final String emoji;
+
+  const _SummaryChip({
+    required this.label,
+    required this.count,
+    required this.color,
+    required this.emoji,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Text(emoji, style: const TextStyle(fontSize: 18)),
+        const SizedBox(height: 2),
+        Text(
+          '$count',
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+            color: color,
+          ),
+        ),
+        Text(
+          label,
+          style: TextStyle(fontSize: 10, color: color.withValues(alpha: 0.8)),
+        ),
+      ],
+    );
+  }
+}
+
+// ── _DayTile ──────────────────────────────────────────────────
+class _DayTile extends StatelessWidget {
+  final _DayEntry entry;
+  final bool isSelected;
+
+  const _DayTile({required this.entry, this.isSelected = false});
+
+  (String, String, Color) get _statusInfo {
+    final status = entry.record?['status'] as String?;
+    return switch (status) {
+      'present' => ('🏢', 'Present', Colors.green),
+      'wfh' => ('🏠', 'WFH', Colors.blue),
+      'absent' => ('❌', 'Absent', Colors.red),
+      _ => ('—', 'Not Marked', Colors.grey),
+    };
+  }
+
+  String? _formatTime(String? iso) {
+    if (iso == null) return null;
+    final dt = DateTime.parse(iso).toLocal();
+    return '${dt.hour.toString().padLeft(2, '0')}:'
+        '${dt.minute.toString().padLeft(2, '0')}';
+  }
+
+  bool get _isToday {
+    final now = DateTime.now();
+    return entry.date.year == now.year &&
+        entry.date.month == now.month &&
+        entry.date.day == now.day;
+  }
+
+  bool get _isWeekend =>
+      entry.date.weekday == DateTime.saturday ||
+      entry.date.weekday == DateTime.sunday;
+
+  @override
+  Widget build(BuildContext context) {
+    final (emoji, label, color) = _statusInfo;
+    final record = entry.record;
+    final hasRecord = record != null;
+    final isLate = record?['is_late'] as bool? ?? false;
+    final totalHours = (record?['total_hours'] as num?)?.toDouble();
+    final checkIn = _formatTime(record?['check_in_time'] as String?);
+    final checkOut = _formatTime(record?['check_out_time'] as String?);
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 250),
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      decoration: BoxDecoration(
+        color: isSelected
+            ? color.withValues(alpha: 0.12)
+            : _isToday
+            ? color.withValues(alpha: 0.07)
+            : _isWeekend
+            ? Theme.of(
+                context,
+              ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5)
+            : Theme.of(context).colorScheme.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isSelected
+              ? color.withValues(alpha: 0.6)
+              : _isToday
+              ? color.withValues(alpha: 0.4)
+              : Theme.of(
+                  context,
+                ).colorScheme.outlineVariant.withValues(alpha: 0.3),
+          width: isSelected || _isToday ? 1.5 : 1,
+        ),
+      ),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         child: Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            // ── Left: Date Badge ─────────────────────────────
+            // ── Date box ────────────────────────────────────
             Container(
-              width: 52,
-              padding: const EdgeInsets.symmetric(vertical: 8),
+              width: 48,
+              height: 52,
               decoration: BoxDecoration(
-                // WHY withValues: withOpacity() deprecated in Flutter 3.27+
-                // withValues(alpha:) is the replacement — no precision loss
-                color: _statusColor(record.status).withValues(alpha: 0.12),
+                color: _isWeekend && !hasRecord
+                    ? Colors.grey.withValues(alpha: 0.08)
+                    : color.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Text(
-                    _dayNum(record.date), // e.g. "25"
+                    DateFormat('dd').format(entry.date),
                     style: TextStyle(
-                      fontSize: 20,
+                      fontSize: 18,
                       fontWeight: FontWeight.bold,
-                      color: _statusColor(record.status),
+                      color: hasRecord ? color : Colors.grey,
                     ),
                   ),
                   Text(
-                    _monthShort(record.date), // e.g. "Mar"
+                    DateFormat('EEE').format(entry.date),
                     style: TextStyle(
-                      fontSize: 11,
-                      color: _statusColor(record.status),
+                      fontSize: 10,
+                      color: hasRecord
+                          ? color.withValues(alpha: 0.8)
+                          : Colors.grey,
                     ),
                   ),
                 ],
@@ -164,51 +879,146 @@ class _AttendanceCard extends StatelessWidget {
 
             const SizedBox(width: 14),
 
-            // ── Right: Details ───────────────────────────────
+            // ── Status + details ─────────────────────────────
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Row 1: Status chip + optional Late chip
                   Row(
                     children: [
-                      _StatusChip(status: record.status),
-                      if (record.isLate) ...[
+                      Text(emoji, style: const TextStyle(fontSize: 16)),
+                      const SizedBox(width: 6),
+                      Text(
+                        label,
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: color,
+                        ),
+                      ),
+                      if (_isToday) ...[
                         const SizedBox(width: 6),
-                        const _LateChip(),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 1,
+                          ),
+                          decoration: BoxDecoration(
+                            color: color.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            'Today',
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: color,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
+                      if (isLate) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 1,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.amber.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(
+                              color: Colors.amber.withValues(alpha: 0.5),
+                            ),
+                          ),
+                          child: const Text(
+                            '⚠️ Late',
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: Colors.amber,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
                       ],
                     ],
                   ),
 
-                  const SizedBox(height: 6),
-
-                  // Row 2: Check-in and Check-out times with icons
-                  Row(
-                    children: [
-                      const Icon(Icons.login, size: 14, color: Colors.green),
-                      const SizedBox(width: 4),
-                      Text(
-                        'In: ${_formatTime(record.checkInTime)}',
-                        style: const TextStyle(fontSize: 13),
-                      ),
-                      const SizedBox(width: 14),
-                      const Icon(Icons.logout, size: 14, color: Colors.red),
-                      const SizedBox(width: 4),
-                      Text(
-                        'Out: ${_formatTime(record.checkOutTime)}',
-                        style: const TextStyle(fontSize: 13),
-                      ),
-                    ],
-                  ),
-
-                  // Row 3: Total hours — only visible after check-out
-                  if (record.totalHours != null) ...[
+                  if (hasRecord && checkIn != null) ...[
                     const SizedBox(height: 4),
-                    Text(
-                      '⏱ ${record.totalHours!.toStringAsFixed(1)} hrs',
-                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.login_rounded,
+                          size: 12,
+                          color: Colors.green.withValues(alpha: 0.8),
+                        ),
+                        const SizedBox(width: 3),
+                        Text(
+                          checkIn,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Colors.green,
+                          ),
+                        ),
+                        if (checkOut != null) ...[
+                          const SizedBox(width: 10),
+                          Icon(
+                            Icons.logout_rounded,
+                            size: 12,
+                            color: Colors.red.withValues(alpha: 0.8),
+                          ),
+                          const SizedBox(width: 3),
+                          Text(
+                            checkOut,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Colors.red,
+                            ),
+                          ),
+                        ],
+                        if (totalHours != null) ...[
+                          const SizedBox(width: 10),
+                          Icon(
+                            Icons.access_time_rounded,
+                            size: 12,
+                            color: Colors.grey.withValues(alpha: 0.8),
+                          ),
+                          const SizedBox(width: 3),
+                          Text(
+                            '${totalHours.toStringAsFixed(1)}h',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey,
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ],
+
+                  if (hasRecord &&
+                      checkIn != null &&
+                      checkOut == null &&
+                      record?['status'] != 'absent') ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      'Still checked in',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.blue.withValues(alpha: 0.7),
+                      ),
+                    ),
+                  ],
+
+                  if (_isWeekend && !hasRecord)
+                    Text(
+                      'Weekend',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.grey.withValues(alpha: 0.6),
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -217,111 +1027,42 @@ class _AttendanceCard extends StatelessWidget {
       ),
     );
   }
-
-  // ── Helpers ──────────────────────────────────────────────
-
-  // Convert UTC ISO string → local IST time string "HH:mm"
-  // WHY .toLocal(): timestamps saved as UTC "Z" → +5:30 = IST display
-  String _formatTime(String? iso) {
-    if (iso == null) return '--:--';
-    final dt = DateTime.parse(iso).toLocal();
-    return '${dt.hour.toString().padLeft(2, '0')}:'
-        '${dt.minute.toString().padLeft(2, '0')}';
-  }
-
-  // Extract day from "2026-03-25" → "25"
-  String _dayNum(String date) => date.split('-')[2];
-
-  // Extract month name from "2026-03-25" → "Mar"
-  String _monthShort(String date) {
-    const months = [
-      '',
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec',
-    ];
-    return months[int.parse(date.split('-')[1])];
-  }
-
-  // Map status string → display color used in badge + chips
-  Color _statusColor(String status) => switch (status) {
-    'Present' => Colors.green,
-    'Absent' => Colors.red,
-    'Half Day' => Colors.orange,
-    'WFH' => Colors.blue,
-    _ => Colors.grey,
-  };
 }
 
-// ============================================================
-// _StatusChip
-// PURPOSE: Colored pill badge showing attendance status text.
-// ============================================================
-class _StatusChip extends StatelessWidget {
-  final String status;
-  const _StatusChip({required this.status});
+// ── _ErrorView ────────────────────────────────────────────────
+class _ErrorView extends StatelessWidget {
+  final String error;
+  final VoidCallback onRetry;
+
+  const _ErrorView({required this.error, required this.onRetry});
 
   @override
   Widget build(BuildContext context) {
-    final color = switch (status) {
-      'Present' => Colors.green,
-      'Absent' => Colors.red,
-      'Half Day' => Colors.orange,
-      'WFH' => Colors.blue,
-      _ => Colors.grey,
-    };
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        // WHY withValues: replacement for deprecated withOpacity()
-        color: color.withValues(alpha: 0.15),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Text(
-        status,
-        style: TextStyle(
-          fontSize: 12,
-          fontWeight: FontWeight.w600,
-          color: color,
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.error_outline, size: 48, color: Colors.red),
+            const SizedBox(height: 12),
+            Text(
+              error,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.red),
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton(onPressed: onRetry, child: const Text('Retry')),
+          ],
         ),
       ),
     );
   }
 }
 
-// ============================================================
-// _LateChip
-// PURPOSE: Orange pill badge — only shown when isLate = true.
-// ============================================================
-class _LateChip extends StatelessWidget {
-  const _LateChip();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        // WHY withValues: replacement for deprecated withOpacity()
-        color: Colors.orange.withValues(alpha: 0.15),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: const Text(
-        '⚠ Late',
-        style: TextStyle(
-          fontSize: 11,
-          fontWeight: FontWeight.w600,
-          color: Colors.orange,
-        ),
-      ),
-    );
-  }
+// ── _DayEntry ─────────────────────────────────────────────────
+class _DayEntry {
+  final DateTime date;
+  final Map<String, dynamic>? record;
+  const _DayEntry({required this.date, this.record});
 }
