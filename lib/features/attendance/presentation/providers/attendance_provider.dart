@@ -174,6 +174,7 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
       }
 
       final checkInUtc = DateTime.parse(checkInTime);
+      // ignore: unused_local_variable
       final autoCheckOutUtc = checkInUtc.add(const Duration(hours: 8));
       final totalHours = 8.0; // capped at standard workday
 
