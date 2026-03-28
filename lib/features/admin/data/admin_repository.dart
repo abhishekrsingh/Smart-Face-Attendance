@@ -5,15 +5,32 @@ class AdminRepository {
   final _client = Supabase.instance.client;
 
   // ── getEmployeesWithTodayStatus() ───────────────────────────
-  // WHY kept: used in admin_dashboard_page.dart directly
-  // Now delegates to fetchEmployeesWithAttendance(today)
   Future<List<Map<String, dynamic>>> getEmployeesWithTodayStatus() async {
     return fetchEmployeesWithAttendance(DateTime.now());
   }
 
   // ── fetchEmployeesWithAttendance() ──────────────────────────
-  // PURPOSE: Fetch all employees + attendance for ANY date
-  // WHY date param: admin_provider needs this for date picker
+  // PURPOSE: Fetch all employees + their attendance for ANY date
+  //
+  // REAL SCENARIOS where admin uses this:
+  //   Scenario 1 — Wrong Status:
+  //     Employee GPS marked WFH but was actually in office
+  //     Admin picks today → finds employee → taps ✏️ → fixes status
+  //
+  //   Scenario 2 — Forgot Checkout:
+  //     Employee left at 6 PM but forgot to tap Check Out
+  //     Admin picks today → finds employee → clears checkout
+  //     Employee can now check out from their own phone
+  //
+  //   Scenario 3 — Past Date Audit:
+  //     HR auditing last Monday → admin picks that date
+  //     Sees all 15 employees' status → edits errors
+  //
+  // WHY attendance_id separate from profile id:
+  //   profiles.id   = user UUID  (who the person is)
+  //   attendance.id = record UUID (what to UPDATE in DB)
+  //   Without attendance_id, updateAttendance() would
+  //   use user UUID → 0 rows matched → silent fail ❌
   Future<List<Map<String, dynamic>>> fetchEmployeesWithAttendance(
     DateTime date,
   ) async {
@@ -31,7 +48,9 @@ class AdminRepository {
       final attendance = await _client
           .from('attendance')
           .select(
-            'user_id, status, check_in_time, check_out_time, '
+            // WHY id included: needed as attendance_id for updateAttendance()
+            // Without this, edit sheet uses user UUID → wrong row updated
+            'id, user_id, status, check_in_time, check_out_time, '
             'is_late, total_hours',
           )
           .eq('date', dateStr);
@@ -49,6 +68,11 @@ class AdminRepository {
 
         return {
           ...profile,
+          // WHY attendance_id not 'id':
+          //   ...profile already sets 'id' = user UUID
+          //   storing attendance record id separately prevents collision
+          //   _showEditDialog() reads 'attendance_id' for DB update
+          'attendance_id': att?['id'],
           'status': att?['status'],
           'check_in_time': att?['check_in_time'],
           'check_out_time': att?['check_out_time'],
@@ -57,7 +81,7 @@ class AdminRepository {
         };
       }).toList();
 
-      AppLogger.info('✅ ${result.length} employees for $dateStr');
+      AppLogger.info('✅ ${result.length} employees loaded for $dateStr');
       return result;
     } on PostgrestException catch (e) {
       AppLogger.error('fetchEmployeesWithAttendance failed: ${e.message}');
@@ -69,6 +93,15 @@ class AdminRepository {
   }
 
   // ── updateAttendance() ──────────────────────────────────────
+  // PURPOSE: Admin manually corrects an attendance record
+  //
+  // Scenario 1 — Status fix:
+  //   updateAttendance(attendanceId: 'xyz', status: 'present', ...)
+  //   → changes WFH → Present in DB
+  //
+  // Scenario 2 — Clear checkout:
+  //   updateAttendance(attendanceId: 'xyz', checkOutTime: null, ...)
+  //   → removes check_out_time → employee can check out again
   Future<void> updateAttendance({
     required String attendanceId,
     required String status,
@@ -174,8 +207,6 @@ class AdminRepository {
   }
 
   // ── _dateString() ──────────────────────────────────────────
-  // WHY accepts DateTime param: works for today AND any past date
-  // replaces old _localDateString() which was hardcoded to now
   String _dateString(DateTime date) {
     final y = date.year;
     final m = date.month.toString().padLeft(2, '0');
@@ -184,5 +215,5 @@ class AdminRepository {
   }
 }
 
-// ✅ Global singleton — only adminRepository here
+// ✅ Global singleton
 final adminRepository = AdminRepository();
