@@ -5,9 +5,12 @@
     <!-- Camera -->
     <uses-permission android:name="android.permission.CAMERA"/>
 
-    <!-- Storage (for saving face data) -->
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+    <!-- Storage permissions — scoped by SDK level: -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29"/>
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32"/>
+
 
     <!-- Camera feature declaration -->
     <uses-feature android:name="android.hardware.camera" android:required="true"/>
@@ -19,6 +22,7 @@
 
     <application
         android:label="face_track"
+        android:enableOnBackInvokedCallback="true"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

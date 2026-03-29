@@ -1,4 +1,5 @@
 import 'package:face_track/features/admin/data/admin_repository.dart';
+import 'package:face_track/features/admin/presentation/pages/admin_reports_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
@@ -447,6 +448,16 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
       appBar: AppBar(
         title: const Text('Admin Dashboard'),
         actions: [
+          // ── Reports ─────────────────────────────────────────
+          // WHY icon not text: saves space alongside refresh+logout
+          IconButton(
+            icon: const Icon(Icons.bar_chart_rounded),
+            tooltip: 'Monthly Reports',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const AdminReportsPage()),
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.refresh_rounded),
             onPressed: _loadEmployees,
