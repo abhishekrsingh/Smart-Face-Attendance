@@ -10,32 +10,10 @@ class AdminRepository {
   }
 
   // ── fetchEmployeesWithAttendance() ──────────────────────────
-  // PURPOSE: Fetch all employees + their attendance for ANY date
-  //
-  // REAL SCENARIOS where admin uses this:
-  //   Scenario 1 — Wrong Status:
-  //     Employee GPS marked WFH but was actually in office
-  //     Admin picks today → finds employee → taps ✏️ → fixes status
-  //
-  //   Scenario 2 — Forgot Checkout:
-  //     Employee left at 6 PM but forgot to tap Check Out
-  //     Admin picks today → finds employee → clears checkout
-  //     Employee can now check out from their own phone
-  //
-  //   Scenario 3 — Past Date Audit:
-  //     HR auditing last Monday → admin picks that date
-  //     Sees all 15 employees' status → edits errors
-  //
-  // WHY attendance_id separate from profile id:
-  //   profiles.id   = user UUID  (who the person is)
-  //   attendance.id = record UUID (what to UPDATE in DB)
-  //   Without attendance_id, updateAttendance() would
-  //   use user UUID → 0 rows matched → silent fail ❌
   Future<List<Map<String, dynamic>>> fetchEmployeesWithAttendance(
     DateTime date,
   ) async {
     final dateStr = _dateString(date);
-
     try {
       final profiles = await _client
           .from('profiles')
@@ -48,8 +26,6 @@ class AdminRepository {
       final attendance = await _client
           .from('attendance')
           .select(
-            // WHY id included: needed as attendance_id for updateAttendance()
-            // Without this, edit sheet uses user UUID → wrong row updated
             'id, user_id, status, check_in_time, check_out_time, '
             'is_late, total_hours',
           )
@@ -65,13 +41,8 @@ class AdminRepository {
       final result = profiles.map<Map<String, dynamic>>((profile) {
         final userId = profile['id'] as String;
         final att = attendanceMap[userId];
-
         return {
           ...profile,
-          // WHY attendance_id not 'id':
-          //   ...profile already sets 'id' = user UUID
-          //   storing attendance record id separately prevents collision
-          //   _showEditDialog() reads 'attendance_id' for DB update
           'attendance_id': att?['id'],
           'status': att?['status'],
           'check_in_time': att?['check_in_time'],
@@ -92,16 +63,88 @@ class AdminRepository {
     }
   }
 
+  // ── getMonthlyReport() ──────────────────────────────────────
+  // PURPOSE: Per-employee attendance summary for a full month
+  // WHY two queries not join: Supabase free tier join is limited
+  //   Query 1 → all employees (profiles)
+  //   Query 2 → all attendance records for the month
+  //   Then join in Dart → fast + no extra DB cost
+  //
+  // Returns per employee:
+  //   present_days, wfh_days, absent_days, late_days, total_hours
+  Future<List<Map<String, dynamic>>> getMonthlyReport(DateTime month) async {
+    final firstDay = DateTime(month.year, month.month, 1);
+    final lastDay = DateTime(month.year, month.month + 1, 0);
+    final firstStr = _dateString(firstDay);
+    final lastStr = _dateString(lastDay);
+
+    try {
+      final profiles = await _client
+          .from('profiles')
+          .select('id, full_name, email, department')
+          .eq('role', 'employee')
+          .order('full_name', ascending: true);
+
+      AppLogger.debug('Report profiles: ${profiles.length}');
+
+      final attendance = await _client
+          .from('attendance')
+          .select(
+            'user_id, date, status, is_late, '
+            'total_hours, check_in_time, check_out_time',
+          )
+          .gte('date', firstStr)
+          .lte('date', lastStr);
+
+      AppLogger.debug(
+        'Report attendance: ${attendance.length} | $firstStr → $lastStr',
+      );
+
+      // Group attendance records by user_id
+      final attByUser = <String, List<Map<String, dynamic>>>{};
+      for (final r in attendance) {
+        final uid = r['user_id'] as String;
+        attByUser.putIfAbsent(uid, () => []).add(r);
+      }
+
+      final result = profiles.map<Map<String, dynamic>>((profile) {
+        final uid = profile['id'] as String;
+        final records = attByUser[uid] ?? [];
+
+        final presentDays = records
+            .where((r) => r['status'] == 'present')
+            .length;
+        final wfhDays = records.where((r) => r['status'] == 'wfh').length;
+        final absentDays = records.where((r) => r['status'] == 'absent').length;
+        final lateDays = records.where((r) => r['is_late'] == true).length;
+        final totalHours = records.fold<double>(
+          0.0,
+          (sum, r) => sum + ((r['total_hours'] as num?)?.toDouble() ?? 0.0),
+        );
+
+        return {
+          ...profile,
+          'present_days': presentDays,
+          'wfh_days': wfhDays,
+          'absent_days': absentDays,
+          'late_days': lateDays,
+          'total_hours': double.parse(totalHours.toStringAsFixed(1)),
+          'records': records, // ← full daily records for drill-down
+        };
+      }).toList();
+
+      AppLogger.info('✅ Monthly report: ${result.length} employees');
+      return result;
+    } on PostgrestException catch (e) {
+      AppLogger.error('getMonthlyReport failed: ${e.message}');
+      rethrow;
+    } catch (e, st) {
+      AppLogger.error('getMonthlyReport error', e, st);
+      rethrow;
+    }
+  }
+
   // ── updateAttendance() ──────────────────────────────────────
-  // PURPOSE: Admin manually corrects an attendance record
-  //
-  // Scenario 1 — Status fix:
-  //   updateAttendance(attendanceId: 'xyz', status: 'present', ...)
-  //   → changes WFH → Present in DB
-  //
-  // Scenario 2 — Clear checkout:
-  //   updateAttendance(attendanceId: 'xyz', checkOutTime: null, ...)
-  //   → removes check_out_time → employee can check out again
   Future<void> updateAttendance({
     required String attendanceId,
     required String status,
@@ -154,7 +197,6 @@ class AdminRepository {
   // ── getTodaySummary() ───────────────────────────────────────
   Future<Map<String, int>> getTodaySummary() async {
     final today = _dateString(DateTime.now());
-
     try {
       final response = await _client
           .from('attendance')
