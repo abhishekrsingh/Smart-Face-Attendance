@@ -69,9 +69,6 @@ class AdminRepository {
   //   Query 1 → all employees (profiles)
   //   Query 2 → all attendance records for the month
   //   Then join in Dart → fast + no extra DB cost
-  //
-  // Returns per employee:
-  //   present_days, wfh_days, absent_days, late_days, total_hours
   Future<List<Map<String, dynamic>>> getMonthlyReport(DateTime month) async {
     final firstDay = DateTime(month.year, month.month, 1);
     final lastDay = DateTime(month.year, month.month + 1, 0);
@@ -129,7 +126,7 @@ class AdminRepository {
           'absent_days': absentDays,
           'late_days': lateDays,
           'total_hours': double.parse(totalHours.toStringAsFixed(1)),
-          'records': records, // ← full daily records for drill-down
+          'records': records,
         };
       }).toList();
 
@@ -248,7 +245,71 @@ class AdminRepository {
     }
   }
 
-  // ── _dateString() ──────────────────────────────────────────
+  // ── getLeaveRequests() ──────────────────────────────────────
+  // PURPOSE: Fetch ALL employee leave requests with profile info
+  // WHY flatten profiles: AdminLeaveCard reads full_name/email
+  //   directly from top-level map — avoids nested access
+  // WHY order by created_at desc: newest requests shown first
+  //   so admin sees latest pending ones without scrolling
+  Future<List<Map<String, dynamic>>> getLeaveRequests() async {
+    try {
+      final data = await _client
+          .from('leave_requests')
+          .select('*, profiles(full_name, email)')
+          .order('created_at', ascending: false);
+
+      // ── Flatten nested profile into top-level keys ─────────
+      final result = (data as List).map((row) {
+        final profile = row['profiles'] as Map<String, dynamic>?;
+        return {
+          ...Map<String, dynamic>.from(row as Map),
+          'full_name': profile?['full_name'] ?? 'Unknown',
+          'email': profile?['email'] ?? '',
+        };
+      }).toList();
+
+      AppLogger.debug('Leave requests fetched: ${result.length}');
+      return List<Map<String, dynamic>>.from(result);
+    } on PostgrestException catch (e) {
+      AppLogger.error('getLeaveRequests failed: ${e.message}');
+      rethrow;
+    } catch (e, st) {
+      AppLogger.error('getLeaveRequests error', e, st);
+      rethrow;
+    }
+  }
+
+  // ── updateLeaveStatus() ─────────────────────────────────────
+  // PURPOSE: Admin approves or rejects a leave request
+  // WHY store admin_note: employee sees the reason in their
+  //   leave list — transparency + fewer support queries
+  // WHY update not delete: keeps full audit trail in DB
+  Future<void> updateLeaveStatus({
+    required String leaveId,
+    required String status, // 'approved' or 'rejected'
+    String? adminNote,
+  }) async {
+    try {
+      await _client
+          .from('leave_requests')
+          .update({
+            'status': status,
+            'admin_note': adminNote,
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          })
+          .eq('id', leaveId);
+
+      AppLogger.info('✅ Leave $leaveId → $status');
+    } on PostgrestException catch (e) {
+      AppLogger.error('updateLeaveStatus failed: ${e.message}');
+      rethrow;
+    } catch (e, st) {
+      AppLogger.error('updateLeaveStatus error', e, st);
+      rethrow;
+    }
+  }
+
+  // ── _dateString() ───────────────────────────────────────────
   String _dateString(DateTime date) {
     final y = date.year;
     final m = date.month.toString().padLeft(2, '0');

@@ -1,5 +1,6 @@
 import 'package:face_track/features/admin/data/admin_repository.dart';
 import 'package:face_track/features/admin/presentation/pages/admin_reports_page.dart';
+import 'package:face_track/features/admin/presentation/pages/admin_leave_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
@@ -73,29 +74,7 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
     return _employees.where((e) => e['status'] == _selectedFilter).toList();
   }
 
-  // ── _showEditDialog() ───────────────────────────────────────
-  // PURPOSE: Admin corrects employee attendance manually
-  //
-  // Scenario 1 — Wrong Status (GPS inaccuracy / VPN):
-  //   Employee GPS said WFH but was actually in office
-  //   Admin taps ✏️ → changes WFH → Present → Save
-  //   DB record corrected immediately ✅
-  //
-  // Scenario 2 — Forgot to Check Out:
-  //   Employee left at 6 PM, forgot to tap Check Out
-  //   Admin taps ✏️ → ticks "Clear checkout time"
-  //   → check_out_time set to null in DB
-  //   → employee can now check out from their phone ✅
-  //
-  // WHY attendance_id not employee id:
-  //   employee['id'] = user UUID from profiles table
-  //   employee['attendance_id'] = attendance record UUID
-  //   updateAttendance() needs attendance record UUID
-  //   Using user UUID → 0 rows matched → silent fail ❌
   Future<void> _showEditDialog(Map<String, dynamic> employee) async {
-    // ── Scenario 1/2 guard: no record = nothing to edit ──────
-    // WHY check attendance_id not status: employee may have
-    // a record with null status (edge case from old data)
     final attendanceId = employee['attendance_id'] as String?;
     final employeeName = employee['full_name'] ?? 'Employee';
 
@@ -139,7 +118,7 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // ── Header ────────────────────────────────
+                  // ── Header ────────────────────────────────────
                   Row(
                     children: [
                       const Icon(Icons.edit_rounded, size: 20),
@@ -156,8 +135,6 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
                               ),
                               overflow: TextOverflow.ellipsis,
                             ),
-                            // WHY show date: admin always knows
-                            // which date they are correcting
                             Text(
                               DateFormat(
                                 'EEE, dd MMM yyyy',
@@ -182,9 +159,7 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
                   const Divider(),
                   const SizedBox(height: 8),
 
-                  // ── Current status ─────────────────────────
-                  // WHY show current: admin sees what they
-                  // are changing FROM — avoids accidental edits
+                  // ── Current Status ────────────────────────────
                   Container(
                     padding: const EdgeInsets.all(10),
                     decoration: BoxDecoration(
@@ -216,70 +191,74 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
 
                   const SizedBox(height: 16),
 
-                  // ── Scenario 1: Status Dropdown ─────────────
-                  // USE CASE: GPS was wrong / VPN changed location
-                  // Admin changes WFH → Present or vice versa
+                  // ── Change Status Dropdown ────────────────────
+                  // FIX: InputDecorator + DropdownButton
+                  // WHY: DropdownButtonFormField.value is deprecated
+                  // after Flutter v3.33 — use initialValue instead
+                  // BUT initialValue doesn't support onChanged well
+                  // so wrapping DropdownButton in InputDecorator
+                  // gives same UI without the deprecation warning
                   const Text(
                     'Change Status',
                     style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
                   ),
                   const SizedBox(height: 8),
-                  DropdownButtonFormField<String>(
-                    value: selectedStatus,
+                  InputDecorator(
                     decoration: InputDecoration(
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(10),
                       ),
                       contentPadding: const EdgeInsets.symmetric(
                         horizontal: 16,
-                        vertical: 12,
+                        vertical: 4,
                       ),
                     ),
-                    items: const [
-                      DropdownMenuItem(
-                        value: 'present',
-                        child: Row(
-                          children: [
-                            Text('🏢 ', style: TextStyle(fontSize: 16)),
-                            Text('Present — Work From Office'),
-                          ],
+                    child: DropdownButton<String>(
+                      value: selectedStatus,
+                      isExpanded: true,
+                      // WHY SizedBox(): InputDecorator already
+                      // draws the border — hide default underline
+                      underline: const SizedBox(),
+                      items: const [
+                        DropdownMenuItem(
+                          value: 'present',
+                          child: Row(
+                            children: [
+                              Text('🏢 ', style: TextStyle(fontSize: 16)),
+                              Text('Present — Work From Office'),
+                            ],
+                          ),
                         ),
-                      ),
-                      DropdownMenuItem(
-                        value: 'wfh',
-                        child: Row(
-                          children: [
-                            Text('🏠 ', style: TextStyle(fontSize: 16)),
-                            Text('WFH — Work From Home'),
-                          ],
+                        DropdownMenuItem(
+                          value: 'wfh',
+                          child: Row(
+                            children: [
+                              Text('🏠 ', style: TextStyle(fontSize: 16)),
+                              Text('WFH — Work From Home'),
+                            ],
+                          ),
                         ),
-                      ),
-                      DropdownMenuItem(
-                        value: 'absent',
-                        child: Row(
-                          children: [
-                            Text('❌ ', style: TextStyle(fontSize: 16)),
-                            Text('Absent'),
-                          ],
+                        DropdownMenuItem(
+                          value: 'absent',
+                          child: Row(
+                            children: [
+                              Text('❌ ', style: TextStyle(fontSize: 16)),
+                              Text('Absent'),
+                            ],
+                          ),
                         ),
-                      ),
-                    ],
-                    onChanged: (val) {
-                      if (val != null) {
-                        setSheetState(() => selectedStatus = val);
-                      }
-                    },
+                      ],
+                      onChanged: (val) {
+                        if (val != null) {
+                          setSheetState(() => selectedStatus = val);
+                        }
+                      },
+                    ),
                   ),
 
                   const SizedBox(height: 16),
 
-                  // ── Scenario 2: Clear Checkout ──────────────
-                  // USE CASE: Employee forgot to check out
-                  //   check_out_time exists → employee stuck
-                  //   Admin ticks this → clears checkout
-                  //   Employee can now check out from their phone
-                  // WHY only show when checked out: no checkout
-                  //   to clear if employee hasn't checked out yet
+                  // ── Clear Checkout ────────────────────────────
                   if (employee['check_out_time'] != null) ...[
                     const Divider(),
                     const SizedBox(height: 8),
@@ -326,7 +305,7 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
 
                   const SizedBox(height: 24),
 
-                  // ── Save ────────────────────────────────────
+                  // ── Save ──────────────────────────────────────
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton.icon(
@@ -352,26 +331,21 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
                           : () async {
                               setSheetState(() => isSaving = true);
                               try {
-                                // WHY attendance_id not employee id:
-                                // must update attendance row not profile row
                                 await adminRepository.updateAttendance(
                                   attendanceId: attendanceId,
                                   status: selectedStatus,
-                                  // Scenario 2: null clears checkout
-                                  // so employee can re-checkout
                                   checkOutTime: clearCheckout
                                       ? null
                                       : employee['check_out_time'] as String?,
                                 );
-
                                 if (ctx.mounted) Navigator.of(ctx).pop();
                                 await _loadEmployees();
-
                                 if (mounted) {
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     SnackBar(
                                       content: Text(
-                                        '✅ ${employeeName}\'s attendance updated to '
+                                        '✅ ${employeeName}\'s attendance '
+                                        'updated to '
                                         '${_statusLabel(selectedStatus)}',
                                       ),
                                       backgroundColor: Colors.green,
@@ -401,7 +375,7 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
     );
   }
 
-  // ── Helpers ─────────────────────────────────────────────────
+  // ── Helpers ──────────────────────────────────────────────────
   String _statusLabel(String? status) {
     switch (status) {
       case 'present':
@@ -448,8 +422,16 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
       appBar: AppBar(
         title: const Text('Admin Dashboard'),
         actions: [
-          // ── Reports ─────────────────────────────────────────
-          // WHY icon not text: saves space alongside refresh+logout
+          // ── Leave Requests ───────────────────────────────────
+          IconButton(
+            icon: const Icon(Icons.event_available_rounded),
+            tooltip: 'Leave Requests',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const AdminLeavePage()),
+            ).then((_) => _loadEmployees()),
+          ),
+          // ── Reports ──────────────────────────────────────────
           IconButton(
             icon: const Icon(Icons.bar_chart_rounded),
             tooltip: 'Monthly Reports',
@@ -493,7 +475,7 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
             )
           : Column(
               children: [
-                // ── Date Picker Bar ────────────────────────
+                // ── Date Picker Bar ────────────────────────────
                 _DatePickerBar(
                   selectedDate: _selectedDate,
                   isToday: _isToday,
@@ -507,14 +489,14 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
                   },
                 ),
 
-                // ── Summary Chips ──────────────────────────
+                // ── Summary Chips ──────────────────────────────
                 _SummaryBar(
                   employees: _employees,
                   selectedFilter: _selectedFilter,
                   onFilterChanged: (f) => setState(() => _selectedFilter = f),
                 ),
 
-                // ── Employee List ──────────────────────────
+                // ── Employee List ──────────────────────────────
                 Expanded(
                   child: _filteredEmployees.isEmpty
                       ? Center(
@@ -544,9 +526,6 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
                               final emp = _filteredEmployees[i];
                               return EmployeeTile(
                                 employee: emp,
-                                // WHY only show edit when attendance
-                                // record exists: can't edit what
-                                // hasn't been marked yet
                                 onEditTap: emp['attendance_id'] != null
                                     ? () => _showEditDialog(emp)
                                     : null,
