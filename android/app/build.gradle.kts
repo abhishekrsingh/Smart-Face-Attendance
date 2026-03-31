@@ -5,11 +5,12 @@ plugins {
 }
 
 android {
-    namespace = "com.example.face_track"
-    compileSdk = 36                         // ← explicit instead of flutter.compileSdkVersion
-    ndkVersion = "27.0.12077973"             // ← FIXED: override flutter.ndkVersion (was downloading broken NDK 28)
+    namespace  = "com.example.face_track"
+    compileSdk = 36
+    ndkVersion = "27.0.12077973"
 
     compileOptions {
+        isCoreLibraryDesugaringEnabled = true   // ← = true (Kotlin DSL)
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
@@ -20,10 +21,10 @@ android {
 
     defaultConfig {
         applicationId = "com.example.face_track"
-        minSdk = flutter.minSdkVersion                          // ← explicit instead of flutter.minSdkVersion
-        targetSdk = 34                       // ← explicit instead of flutter.targetSdkVersion
-        versionCode = 1
-        versionName = "1.0"
+        minSdk        = flutter.minSdkVersion
+        targetSdk     = 34
+        versionCode   = 1
+        versionName   = "1.0"
     }
 
     buildTypes {
@@ -35,4 +36,8 @@ android {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }

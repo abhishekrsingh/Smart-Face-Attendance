@@ -5,9 +5,11 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/constants/app_routes.dart';
 import '../../../attendance/data/attendance_repository.dart';
+import '../../../attendance/presentation/screens/history_screen.dart';
 import '../../../leave/data/leave_repository.dart';
 import '../../../leave/presentation/pages/leave_page.dart';
 import '../../../profile/data/profile_repository.dart';
+import '../../../profile/presentation/pages/profile_page.dart';
 
 class HomePage extends ConsumerStatefulWidget {
   const HomePage({super.key});
@@ -17,6 +19,10 @@ class HomePage extends ConsumerStatefulWidget {
 }
 
 class _HomePageState extends ConsumerState<HomePage> {
+  // ── Bottom nav ─────────────────────────────────────────────
+  int _currentIndex = 0;
+
+  // ── Dashboard state ────────────────────────────────────────
   String? _todayStatus;
   String? _checkOutTime;
   bool _isLate = false;
@@ -24,7 +30,7 @@ class _HomePageState extends ConsumerState<HomePage> {
   bool _isLoading = false;
   bool _isChecking = true;
 
-  // ── Profile fields for welcome header ──────────────────────
+  // ── Profile fields ─────────────────────────────────────────
   String? _profileName;
   String? _avatarUrl;
 
@@ -34,10 +40,9 @@ class _HomePageState extends ConsumerState<HomePage> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadTodayStatus());
   }
 
+  // ── _loadTodayStatus() ────────────────────────────────────
   Future<void> _loadTodayStatus() async {
     try {
-      // ── Load attendance + profile together ─────────────────
-      // WHY parallel: both are independent — no need to wait
       final results = await Future.wait([
         attendanceRepository.getTodayAttendance(),
         profileRepository.getProfile(),
@@ -52,6 +57,9 @@ class _HomePageState extends ConsumerState<HomePage> {
           _checkOutTime = record?['check_out_time'] as String?;
           _isLate = record?['is_late'] as bool? ?? false;
           _totalHours = (record?['total_hours'] as num?)?.toDouble();
+
+          // WHY avatar_url: matches ProfileRepository.getProfile()
+          //   select — key names are snake_case from Supabase
           _profileName = profile['full_name'] as String?;
           _avatarUrl = profile['avatar_url'] as String?;
           _isChecking = false;
@@ -69,7 +77,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     return _AttendanceState.checkedOut;
   }
 
-  // ── _markAbsent() ───────────────────────────────────────────
+  // ── _markAbsent() ─────────────────────────────────────────
   Future<void> _markAbsent() async {
     setState(() => _isLoading = true);
 
@@ -79,7 +87,7 @@ class _HomePageState extends ConsumerState<HomePage> {
 
     try {
       hasApproval = await leaveRepository.checkApprovedLeaveForDate(today);
-    } catch (e) {
+    } catch (_) {
       checkFailed = true;
     }
 
@@ -133,9 +141,9 @@ class _HomePageState extends ConsumerState<HomePage> {
             ],
           ),
           content: const Text(
-            'You need admin approval before marking yourself absent.\n\n'
-            'Apply for leave → wait for admin to approve → '
-            'then you can mark absent.',
+            'You need admin approval before marking yourself '
+            'absent.\n\nApply for leave → wait for admin to '
+            'approve → then mark absent.',
             style: TextStyle(fontSize: 14, height: 1.5),
           ),
           actions: [
@@ -153,10 +161,10 @@ class _HomePageState extends ConsumerState<HomePage> {
               ),
               onPressed: () {
                 Navigator.of(ctx, rootNavigator: true).pop();
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const LeavePage()),
-                );
+                // ── Switch to Leave tab instead of Navigator.push
+                // WHY: Leave is already tab index 2 — no new
+                //   route needed, avoids double back stack
+                setState(() => _currentIndex = 2);
               },
             ),
           ],
@@ -171,8 +179,8 @@ class _HomePageState extends ConsumerState<HomePage> {
       builder: (_) => AlertDialog(
         title: const Text('Mark Absent'),
         content: const Text(
-          'Are you sure you want to mark yourself absent for today?\n\n'
-          'This cannot be changed without admin help.',
+          'Are you sure you want to mark yourself absent '
+          'for today?\n\nThis cannot be undone without admin.',
         ),
         actions: [
           TextButton(
@@ -217,39 +225,34 @@ class _HomePageState extends ConsumerState<HomePage> {
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final state = _attendanceState;
+  // ── _buildDashboard() ────────────────────────────────────
+  Widget _buildDashboard() {
+    final attState = _attendanceState;
     final primary = Theme.of(context).colorScheme.primary;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Dashboard'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.logout_rounded),
-            onPressed: () async =>
-                await Supabase.instance.client.auth.signOut(),
-          ),
-        ],
-      ),
-      body: Center(
+    return RefreshIndicator(
+      onRefresh: _loadTodayStatus,
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
         child: _isChecking
-            ? const CircularProgressIndicator()
+            ? const SizedBox(
+                height: 400,
+                child: Center(child: CircularProgressIndicator()),
+              )
             : Column(
-                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  // ── Avatar ────────────────────────────────────
-                  // WHY avatar not tick: shows the actual employee
-                  // identity rather than a generic success icon
+                  const SizedBox(height: 16),
+
+                  // ── Avatar ──────────────────────────────
                   _HomeAvatar(
                     avatarUrl: _avatarUrl,
                     name: _profileName ?? '',
                     primaryColor: primary,
                   ),
-                  const SizedBox(height: 18),
+                  const SizedBox(height: 16),
 
-                  // ── Welcome label ─────────────────────────────
+                  // ── Welcome text ────────────────────────
                   Text(
                     'Welcome,',
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
@@ -258,10 +261,6 @@ class _HomePageState extends ConsumerState<HomePage> {
                     ),
                   ),
                   const SizedBox(height: 4),
-
-                  // ── Employee name ─────────────────────────────
-                  // WHY primary color + bold: name stands out as
-                  // the key identity element on the dashboard
                   Text(
                     _profileName ?? 'Employee',
                     style: Theme.of(context).textTheme.headlineSmall?.copyWith(
@@ -271,9 +270,9 @@ class _HomePageState extends ConsumerState<HomePage> {
                       letterSpacing: 0.3,
                     ),
                   ),
-                  const SizedBox(height: 32),
+                  const SizedBox(height: 28),
 
-                  // ── Status Card ──────────────────────────────
+                  // ── Today status card ───────────────────
                   if (_todayStatus != null) ...[
                     _TodayStatusCard(
                       status: _todayStatus!,
@@ -284,91 +283,172 @@ class _HomePageState extends ConsumerState<HomePage> {
                     const SizedBox(height: 24),
                   ],
 
-                  // ── Register Face ────────────────────────────
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 32),
-                    child: ElevatedButton.icon(
-                      onPressed: () => context.push(AppRoutes.faceRegister),
-                      icon: const Icon(Icons.face_retouching_natural_rounded),
-                      label: const Text('Register Face'),
-                      style: ElevatedButton.styleFrom(
-                        minimumSize: const Size(double.infinity, 52),
-                      ),
+                  // ── Register Face ───────────────────────
+                  ElevatedButton.icon(
+                    onPressed: () => context.push(AppRoutes.faceRegister),
+                    icon: const Icon(Icons.face_retouching_natural_rounded),
+                    label: const Text('Register Face'),
+                    style: ElevatedButton.styleFrom(
+                      minimumSize: const Size(double.infinity, 52),
                     ),
                   ),
                   const SizedBox(height: 12),
 
-                  // ── Attendance Button ────────────────────────
-                  if (state != _AttendanceState.absent)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 32),
-                      child: ElevatedButton.icon(
-                        onPressed: () async {
-                          await context.push(AppRoutes.markAttendance);
-                          _loadTodayStatus();
-                        },
-                        icon: Icon(_attendanceIcon(state)),
-                        label: Text(_attendanceLabel(state)),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: _attendanceColor(state),
-                          minimumSize: const Size(double.infinity, 52),
-                        ),
+                  // ── Check In / Out / Re-Check ───────────
+                  if (attState != _AttendanceState.absent)
+                    ElevatedButton.icon(
+                      onPressed: () async {
+                        await context.push(AppRoutes.markAttendance);
+                        _loadTodayStatus();
+                      },
+                      icon: Icon(_attendanceIcon(attState)),
+                      label: Text(_attendanceLabel(attState)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _attendanceColor(attState),
+                        minimumSize: const Size(double.infinity, 52),
                       ),
                     ),
 
-                  // ── Mark Absent ──────────────────────────────
-                  if (state == _AttendanceState.noRecord) ...[
+                  // ── Mark Absent ─────────────────────────
+                  if (attState == _AttendanceState.noRecord) ...[
                     const SizedBox(height: 12),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 32),
-                      child: OutlinedButton.icon(
-                        onPressed: _isLoading ? null : _markAbsent,
-                        icon: _isLoading
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.red,
-                                ),
-                              )
-                            : const Icon(
-                                Icons.cancel_outlined,
+                    OutlinedButton.icon(
+                      onPressed: _isLoading ? null : _markAbsent,
+                      icon: _isLoading
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
                                 color: Colors.red,
                               ),
-                        label: Text(
-                          _isLoading ? 'Checking...' : 'Mark Absent',
-                          style: const TextStyle(color: Colors.red),
-                        ),
-                        style: OutlinedButton.styleFrom(
-                          side: const BorderSide(color: Colors.red),
-                          minimumSize: const Size(double.infinity, 52),
-                        ),
+                            )
+                          : const Icon(
+                              Icons.cancel_outlined,
+                              color: Colors.red,
+                            ),
+                      label: Text(
+                        _isLoading ? 'Checking...' : 'Mark Absent',
+                        style: const TextStyle(color: Colors.red),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: Colors.red),
+                        minimumSize: const Size(double.infinity, 52),
                       ),
                     ),
                   ],
 
-                  // ── My Leaves ────────────────────────────────
-                  const SizedBox(height: 12),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 32),
-                    child: OutlinedButton.icon(
-                      onPressed: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (_) => const LeavePage()),
-                      ).then((_) => _loadTodayStatus()),
-                      icon: const Icon(Icons.event_note_rounded),
-                      label: const Text('My Leaves'),
-                      style: OutlinedButton.styleFrom(
-                        minimumSize: const Size(double.infinity, 52),
-                      ),
-                    ),
-                  ),
+                  const SizedBox(height: 32),
                 ],
               ),
       ),
     );
   }
+
+  // ── build() ──────────────────────────────────────────────
+  @override
+  Widget build(BuildContext context) {
+    // WHY IndexedStack: keeps all tab states alive —
+    //   no re-fetch when switching between tabs
+    final pages = [
+      _buildDashboard(), // 0 — Home
+      const HistoryScreen(), // 1 — History
+      const LeavePage(), // 2 — Leave
+      const ProfilePage(), // 3 — Profile
+    ];
+
+    return Scaffold(
+      // WHY null on profile tab: ProfilePage has its own
+      //   AppBar with refresh + edit actions — showing two
+      //   AppBars stacked looks broken and wastes space
+      appBar: _currentIndex == 3
+          ? null
+          : AppBar(
+              title: Text(_appBarTitle(_currentIndex)),
+              centerTitle: true,
+              actions: [
+                if (_currentIndex == 0)
+                  IconButton(
+                    icon: const Icon(Icons.logout_rounded),
+                    tooltip: 'Sign Out',
+                    onPressed: () async {
+                      final confirm = await showDialog<bool>(
+                        context: context,
+                        useRootNavigator: true,
+                        builder: (ctx) => AlertDialog(
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          title: const Text('Sign Out'),
+                          content: const Text(
+                            'Are you sure you want to sign out?',
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.of(
+                                ctx,
+                                rootNavigator: true,
+                              ).pop(false),
+                              child: const Text('Cancel'),
+                            ),
+                            ElevatedButton(
+                              onPressed: () => Navigator.of(
+                                ctx,
+                                rootNavigator: true,
+                              ).pop(true),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.red,
+                              ),
+                              child: const Text('Sign Out'),
+                            ),
+                          ],
+                        ),
+                      );
+                      if (confirm == true) {
+                        await Supabase.instance.client.auth.signOut();
+                      }
+                    },
+                  ),
+              ],
+            ),
+
+      body: IndexedStack(index: _currentIndex, children: pages),
+
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _currentIndex,
+        onDestinationSelected: (i) => setState(() => _currentIndex = i),
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.home_outlined),
+            selectedIcon: Icon(Icons.home_rounded),
+            label: 'Home',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.history_outlined),
+            selectedIcon: Icon(Icons.history_rounded),
+            label: 'History',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.event_note_outlined),
+            selectedIcon: Icon(Icons.event_note_rounded),
+            label: 'Leave',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.person_outline_rounded),
+            selectedIcon: Icon(Icons.person_rounded),
+            label: 'Profile',
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _appBarTitle(int i) => switch (i) {
+    0 => 'Dashboard',
+    1 => 'History',
+    2 => 'My Leaves',
+    _ => 'FaceAttend',
+  };
 
   String _attendanceLabel(_AttendanceState s) => switch (s) {
     _AttendanceState.noRecord => 'Check In',
@@ -395,8 +475,9 @@ class _HomePageState extends ConsumerState<HomePage> {
 enum _AttendanceState { noRecord, checkedIn, checkedOut, absent }
 
 // ── _HomeAvatar ───────────────────────────────────────────────
-// PURPOSE: Dashboard welcome avatar — replaces the tick icon
-// WHY ClipOval + BoxFit.cover: fills circle with no gap
+// WHY shows initial letter when no avatar: this is correct
+//   fallback behavior — "A" for Abhishek is intentional
+//   until an avatar photo is uploaded in Profile tab
 class _HomeAvatar extends StatelessWidget {
   final String? avatarUrl;
   final String name;
@@ -422,12 +503,23 @@ class _HomeAvatar extends StatelessWidget {
         color: primaryColor.withValues(alpha: 0.08),
       ),
       child: ClipOval(
-        child: avatarUrl != null
+        child: avatarUrl != null && avatarUrl!.isNotEmpty
             ? Image.network(
                 avatarUrl!,
                 width: 90,
                 height: 90,
-                fit: BoxFit.cover, // ← fills circle fully
+                fit: BoxFit.cover,
+                loadingBuilder: (_, child, progress) => progress == null
+                    ? child
+                    : Container(
+                        color: primaryColor.withValues(alpha: 0.1),
+                        child: Center(
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: primaryColor,
+                          ),
+                        ),
+                      ),
                 errorBuilder: (_, __, ___) => _fallback(primaryColor),
               )
             : _fallback(primaryColor),
@@ -474,7 +566,7 @@ class _TodayStatusCard extends StatelessWidget {
     };
 
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 32),
+      width: double.infinity,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.1),
@@ -482,77 +574,76 @@ class _TodayStatusCard extends StatelessWidget {
         border: Border.all(color: color.withValues(alpha: 0.4)),
       ),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Text(emoji, style: const TextStyle(fontSize: 28)),
           const SizedBox(width: 12),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                "Today's Status",
-                style: TextStyle(
-                  fontSize: 11,
-                  color: color,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 16,
-                  color: color,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 4),
-              if (isLate && status != 'absent')
-                Container(
-                  margin: const EdgeInsets.only(top: 4),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 2,
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  "Today's Status",
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: color,
+                    fontWeight: FontWeight.w500,
                   ),
-                  decoration: BoxDecoration(
-                    color: Colors.amber.withValues(alpha: 0.2),
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(
-                      color: Colors.amber.withValues(alpha: 0.6),
+                ),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 16,
+                    color: color,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                if (isLate && status != 'absent') ...[
+                  const SizedBox(height: 4),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.amber.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(
+                        color: Colors.amber.withValues(alpha: 0.6),
+                      ),
+                    ),
+                    child: const Text(
+                      '⚠️ Late Arrival',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.amber,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
-                  child: const Text(
-                    '⚠️ Late Arrival',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: Colors.amber,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              if (totalHours != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 4),
-                  child: Text(
-                    '🕐 Total: ${totalHours!.toStringAsFixed(1)}h worked',
+                ],
+                if (totalHours != null) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    '🕐 ${totalHours!.toStringAsFixed(1)}h worked',
                     style: TextStyle(
                       fontSize: 12,
                       color: color,
                       fontWeight: FontWeight.w500,
                     ),
                   ),
-                ),
-              if (checkOutTime != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 2),
-                  child: Text(
+                ],
+                if (checkOutTime != null) ...[
+                  const SizedBox(height: 2),
+                  Text(
                     'Checked out ✓',
                     style: TextStyle(
                       fontSize: 11,
                       color: color.withValues(alpha: 0.8),
                     ),
                   ),
-                ),
-            ],
+                ],
+              ],
+            ),
           ),
         ],
       ),

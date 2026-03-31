@@ -74,9 +74,10 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
     return _employees.where((e) => e['status'] == _selectedFilter).toList();
   }
 
+  // ── _showEditDialog() ─────────────────────────────────────
   Future<void> _showEditDialog(Map<String, dynamic> employee) async {
     final attendanceId = employee['attendance_id'] as String?;
-    final employeeName = employee['full_name'] ?? 'Employee';
+    final employeeName = employee['full_name'] as String? ?? 'Employee';
 
     if (attendanceId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -118,7 +119,7 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // ── Header ────────────────────────────────────
+                  // ── Header ─────────────────────────────
                   Row(
                     children: [
                       const Icon(Icons.edit_rounded, size: 20),
@@ -159,7 +160,7 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
                   const Divider(),
                   const SizedBox(height: 8),
 
-                  // ── Current Status ────────────────────────────
+                  // ── Current Status ─────────────────────
                   Container(
                     padding: const EdgeInsets.all(10),
                     decoration: BoxDecoration(
@@ -191,13 +192,7 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
 
                   const SizedBox(height: 16),
 
-                  // ── Change Status Dropdown ────────────────────
-                  // FIX: InputDecorator + DropdownButton
-                  // WHY: DropdownButtonFormField.value is deprecated
-                  // after Flutter v3.33 — use initialValue instead
-                  // BUT initialValue doesn't support onChanged well
-                  // so wrapping DropdownButton in InputDecorator
-                  // gives same UI without the deprecation warning
+                  // ── Change Status Dropdown ─────────────
                   const Text(
                     'Change Status',
                     style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
@@ -217,7 +212,8 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
                       value: selectedStatus,
                       isExpanded: true,
                       // WHY SizedBox(): InputDecorator already
-                      // draws the border — hide default underline
+                      //   draws the border — hide default
+                      //   underline to avoid double border
                       underline: const SizedBox(),
                       items: const [
                         DropdownMenuItem(
@@ -225,25 +221,50 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
                           child: Row(
                             children: [
                               Text('🏢 ', style: TextStyle(fontSize: 16)),
-                              Text('Present — Work From Office'),
+                              // WHY Flexible not Expanded:
+                              //   DropdownMenuItem wraps its
+                              //   child in its own internal Row
+                              //   — nested Expanded breaks
+                              //   constraints and throws errors.
+                              //   Flexible softly constrains
+                              //   the text, ellipsis prevents
+                              //   the 3.4px overflow
+                              Flexible(
+                                child: Text(
+                                  'Present — Work From Office',
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
                             ],
                           ),
                         ),
+
                         DropdownMenuItem(
                           value: 'wfh',
                           child: Row(
                             children: [
                               Text('🏠 ', style: TextStyle(fontSize: 16)),
-                              Text('WFH — Work From Home'),
+                              Flexible(
+                                child: Text(
+                                  'WFH — Work From Home',
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
                             ],
                           ),
                         ),
+
                         DropdownMenuItem(
                           value: 'absent',
                           child: Row(
                             children: [
                               Text('❌ ', style: TextStyle(fontSize: 16)),
-                              Text('Absent'),
+                              Flexible(
+                                child: Text(
+                                  'Absent',
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
                             ],
                           ),
                         ),
@@ -258,7 +279,7 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
 
                   const SizedBox(height: 16),
 
-                  // ── Clear Checkout ────────────────────────────
+                  // ── Clear Checkout ─────────────────────
                   if (employee['check_out_time'] != null) ...[
                     const Divider(),
                     const SizedBox(height: 8),
@@ -294,7 +315,8 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
                         ),
                       ),
                       subtitle: const Text(
-                        'Removes checkout → employee can check out again from their phone',
+                        'Removes checkout → employee can '
+                        'check out again from their phone',
                         style: TextStyle(fontSize: 11),
                       ),
                       onChanged: (val) {
@@ -305,7 +327,7 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
 
                   const SizedBox(height: 24),
 
-                  // ── Save ──────────────────────────────────────
+                  // ── Save Button ────────────────────────
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton.icon(
@@ -338,14 +360,16 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
                                       ? null
                                       : employee['check_out_time'] as String?,
                                 );
-                                if (ctx.mounted) Navigator.of(ctx).pop();
+                                if (ctx.mounted) {
+                                  Navigator.of(ctx).pop();
+                                }
                                 await _loadEmployees();
                                 if (mounted) {
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     SnackBar(
                                       content: Text(
-                                        '✅ ${employeeName}\'s attendance '
-                                        'updated to '
+                                        '✅ $employeeName\'s '
+                                        'attendance updated to '
                                         '${_statusLabel(selectedStatus)}',
                                       ),
                                       backgroundColor: Colors.green,
@@ -357,7 +381,7 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
                                 if (mounted) {
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     SnackBar(
-                                      content: Text('Failed to update: $e'),
+                                      content: Text('Failed: $e'),
                                       backgroundColor: Colors.red,
                                     ),
                                   );
@@ -366,6 +390,8 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
                             },
                     ),
                   ),
+
+                  const SizedBox(height: 8),
                 ],
               ),
             );
@@ -375,32 +401,20 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
     );
   }
 
-  // ── Helpers ──────────────────────────────────────────────────
-  String _statusLabel(String? status) {
-    switch (status) {
-      case 'present':
-        return '🏢 Present';
-      case 'wfh':
-        return '🏠 WFH';
-      case 'absent':
-        return '❌ Absent';
-      default:
-        return '— No Record';
-    }
-  }
+  // ── Helpers ───────────────────────────────────────────────
+  String _statusLabel(String? status) => switch (status) {
+    'present' => '🏢 Present',
+    'wfh' => '🏠 WFH',
+    'absent' => '❌ Absent',
+    _ => '— No Record',
+  };
 
-  Color _statusColor(String? status) {
-    switch (status) {
-      case 'present':
-        return Colors.green;
-      case 'wfh':
-        return Colors.blue;
-      case 'absent':
-        return Colors.red;
-      default:
-        return Colors.grey;
-    }
-  }
+  Color _statusColor(String? status) => switch (status) {
+    'present' => Colors.green,
+    'wfh' => Colors.blue,
+    'absent' => Colors.red,
+    _ => Colors.grey,
+  };
 
   String? _formatTime(String? iso) {
     if (iso == null) return null;
@@ -416,13 +430,13 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
         _selectedDate.day == now.day;
   }
 
+  // ── build() ───────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Admin Dashboard'),
         actions: [
-          // ── Leave Requests ───────────────────────────────────
           IconButton(
             icon: const Icon(Icons.event_available_rounded),
             tooltip: 'Leave Requests',
@@ -431,7 +445,6 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
               MaterialPageRoute(builder: (_) => const AdminLeavePage()),
             ).then((_) => _loadEmployees()),
           ),
-          // ── Reports ──────────────────────────────────────────
           IconButton(
             icon: const Icon(Icons.bar_chart_rounded),
             tooltip: 'Monthly Reports',
@@ -475,7 +488,7 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
             )
           : Column(
               children: [
-                // ── Date Picker Bar ────────────────────────────
+                // ── Date Picker Bar ──────────────────
                 _DatePickerBar(
                   selectedDate: _selectedDate,
                   isToday: _isToday,
@@ -489,14 +502,14 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
                   },
                 ),
 
-                // ── Summary Chips ──────────────────────────────
+                // ── Summary Chips ────────────────────
                 _SummaryBar(
                   employees: _employees,
                   selectedFilter: _selectedFilter,
                   onFilterChanged: (f) => setState(() => _selectedFilter = f),
                 ),
 
-                // ── Employee List ──────────────────────────────
+                // ── Employee List ────────────────────
                 Expanded(
                   child: _filteredEmployees.isEmpty
                       ? Center(
@@ -511,8 +524,10 @@ class _AdminDashboardPageState extends ConsumerState<AdminDashboardPage> {
                               const SizedBox(height: 12),
                               Text(
                                 _selectedFilter == 'all'
-                                    ? 'No records for ${DateFormat('dd MMM yyyy').format(_selectedDate)}'
-                                    : 'No $_selectedFilter records for this date',
+                                    ? 'No records for '
+                                          '${DateFormat('dd MMM yyyy').format(_selectedDate)}'
+                                    : 'No $_selectedFilter '
+                                          'records for this date',
                                 style: const TextStyle(color: Colors.grey),
                               ),
                             ],

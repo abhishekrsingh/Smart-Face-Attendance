@@ -1,116 +1,73 @@
-// ============================================================
-// app_router.dart
-// PURPOSE: All app routes defined here.
-//
-// FLOW:
-//   Splash → check auth + role
-//   ├── Not logged in       → /login
-//   ├── logged in + admin   → /admin  (full screen, no nav bar)
-//   └── logged in + employee → /home  (bottom nav shell)
-//
-// WHY _RouterNotifier: watches BOTH authStateProvider AND
-// userRoleProvider — any change triggers redirect re-check.
-//
-// WHY StatefulShellRoute: each tab keeps its own navigation
-// stack alive — switching tabs doesn't reload pages or lose state.
-// ============================================================
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../features/attendance/presentation/screens/history_screen.dart';
-import '../../features/auth/data/providers/user_role_provider.dart';
+// ── Use the single source of truth for route paths ────────────
+// WHY: Removed duplicate AppRoutes class that was defined here
+//   AND in app_routes.dart — two classes with the same name
+//   caused silent routing failures (signup tap did nothing)
+import '../constants/app_routes.dart';
 import '../../features/auth/presentation/providers/auth_provider.dart';
 import '../../features/splash/presentation/pages/splash_page.dart';
 import '../../features/auth/presentation/pages/login_page.dart';
 import '../../features/auth/presentation/pages/signup_page.dart';
 import '../../features/home/presentation/pages/home_page.dart';
 import '../../features/admin/presentation/pages/admin_dashboard_page.dart';
+import '../../features/admin/presentation/pages/admin_leave_page.dart';
+import '../../features/admin/presentation/pages/admin_reports_page.dart';
+import '../../features/leave/presentation/pages/leave_page.dart';
 import '../../features/profile/presentation/pages/profile_page.dart';
-import '../constants/app_routes.dart';
-import '../navigation/app_shell.dart';
-import '../utils/app_logger.dart';
 import '../../features/face_registration/presentation/pages/face_registration_page.dart';
 import '../../features/attendance/presentation/pages/mark_attendance_page.dart';
 
-// ── Navigator Keys ─────────────────────────────────────────────
-// WHY: StatefulShellRoute needs unique key per branch so each
-// tab has its own independent navigation stack
-final _rootNavigatorKey = GlobalKey<NavigatorState>(debugLabel: 'root');
-final _homeNavKey = GlobalKey<NavigatorState>(debugLabel: 'home');
-final _historyNavKey = GlobalKey<NavigatorState>(debugLabel: 'history');
-final _profileNavKey = GlobalKey<NavigatorState>(debugLabel: 'profile');
-
-// ── RouterNotifier ─────────────────────────────────────────────
-// WHY: Bridges Riverpod with GoRouter's refreshListenable.
-// Watches BOTH auth + role — either change triggers redirect()
-class _RouterNotifier extends ChangeNotifier {
-  final Ref _ref;
-
-  _RouterNotifier(this._ref) {
-    // Re-check routes when auth state changes (login/logout)
-    _ref.listen(authStateProvider, (_, __) => notifyListeners());
-    // Re-check routes when role finishes loading from Supabase
-    _ref.listen(userRoleProvider, (_, __) => notifyListeners());
-  }
-}
-
+// ── appRouterProvider ─────────────────────────────────────────
 final appRouterProvider = Provider<GoRouter>((ref) {
   final notifier = _RouterNotifier(ref);
 
   return GoRouter(
-    navigatorKey: _rootNavigatorKey,
-    initialLocation: AppRoutes.splash,
-    debugLogDiagnostics: true,
+    initialLocation: AppRoutes.splash, // '/'
     refreshListenable: notifier,
-
     redirect: (context, state) {
-      final authAsync = ref.read(authStateProvider);
+      final authState = ref.read(authStateProvider);
+      final status = authState.status;
+      final role = authState.role;
+      final location = state.matchedLocation;
 
-      // Auth still resolving → stay on splash
-      if (authAsync.isLoading) return AppRoutes.splash;
+      // ── Still initialising → hold on splash ───────────────
+      if (status == AuthStatus.initial) {
+        return location == AppRoutes.splash ? null : AppRoutes.splash;
+      }
 
-      final status = authAsync.asData?.value;
-      final isAuthenticated = status is AuthAuthenticated;
-      final isOnSplash = state.matchedLocation == AppRoutes.splash;
-      final isOnAuth =
-          state.matchedLocation == AppRoutes.login ||
-          state.matchedLocation == AppRoutes.signup;
-      final isOnAdmin = state.matchedLocation == AppRoutes.admin;
-
-      // ── Not authenticated + protected route → login ────────
-      if (!isAuthenticated && !isOnAuth && !isOnSplash) {
-        AppLogger.info('Router → /login');
+      // ── Not logged in ──────────────────────────────────────
+      if (status == AuthStatus.unauthenticated) {
+        // WHY allow signup: user must be able to navigate to
+        //   /signup from login without being redirected back
+        if (location == AppRoutes.login || location == AppRoutes.signup) {
+          return null;
+        }
         return AppRoutes.login;
       }
 
-      // ── Authenticated → enforce role-based routing ─────────
-      if (isAuthenticated) {
-        final roleAsync = ref.read(userRoleProvider);
+      // ── Logged in ──────────────────────────────────────────
+      if (status == AuthStatus.authenticated) {
+        // Redirect away from auth screens
+        if (location == AppRoutes.splash ||
+            location == AppRoutes.login ||
+            location == AppRoutes.signup) {
+          return role == 'admin' ? AppRoutes.admin : AppRoutes.home;
+        }
 
-        // WHY: Role still fetching from Supabase → hold on splash
-        // notifier fires again once role loads, re-runs redirect
-        if (roleAsync.isLoading) return AppRoutes.splash;
+        // Block employee from admin routes
+        if (role != 'admin' &&
+            (location == AppRoutes.admin ||
+                location == AppRoutes.adminLeave ||
+                location == AppRoutes.adminReports)) {
+          return AppRoutes.home;
+        }
 
-        final role = roleAsync.asData?.value;
-
-        // Admin on any non-admin route → push to admin dashboard
-        if (role == 'admin' && !isOnAdmin) {
-          AppLogger.info('Router → /admin (admin role detected)');
+        // Block admin from employee home
+        if (role == 'admin' && location == AppRoutes.home) {
           return AppRoutes.admin;
-        }
-
-        // Non-admin trying to access admin route → push to home
-        if (role != 'admin' && isOnAdmin) {
-          AppLogger.info('Router → /home (not an admin)');
-          return AppRoutes.home;
-        }
-
-        // Employee on auth/splash → send to home (bottom nav)
-        if ((isOnAuth || isOnSplash) && role != 'admin') {
-          AppLogger.info('Router → /home (employee)');
-          return AppRoutes.home;
         }
       }
 
@@ -118,75 +75,49 @@ final appRouterProvider = Provider<GoRouter>((ref) {
     },
 
     routes: [
-      // ── Public routes (no bottom nav) ──────────────────────
+      // ── Auth & splash ────────────────────────────────────────
       GoRoute(path: AppRoutes.splash, builder: (_, __) => const SplashPage()),
       GoRoute(path: AppRoutes.login, builder: (_, __) => const LoginPage()),
-      GoRoute(path: AppRoutes.signup, builder: (_, __) => const SignupPage()),
-
-      // ── Admin route (full screen, no bottom nav) ───────────
-      // WHY parentNavigatorKey _rootNavigatorKey: sits outside
-      // the shell — admin sees NO bottom navigation bar
       GoRoute(
-        parentNavigatorKey: _rootNavigatorKey,
-        path: AppRoutes.admin,
-        builder: (_, __) => const AdminDashboardPage(),
+        path: AppRoutes.signup,
+        builder: (_, __) => const SignupPage(), // ← register page
       ),
 
-      // ── Full screen routes (camera, no bottom nav) ─────────
+      // ── Employee ─────────────────────────────────────────────
+      GoRoute(path: AppRoutes.home, builder: (_, __) => const HomePage()),
       GoRoute(
-        parentNavigatorKey: _rootNavigatorKey,
-        path: AppRoutes.faceRegister,
-        builder: (_, __) => const FaceRegistrationPage(),
-      ),
-      GoRoute(
-        parentNavigatorKey: _rootNavigatorKey,
         path: AppRoutes.markAttendance,
         builder: (_, __) => const MarkAttendancePage(),
       ),
+      GoRoute(
+        path: AppRoutes.faceRegister,
+        builder: (_, __) => const FaceRegistrationPage(),
+      ),
+      GoRoute(path: AppRoutes.leave, builder: (_, __) => const LeavePage()),
+      GoRoute(path: AppRoutes.profile, builder: (_, __) => const ProfilePage()),
 
-      // ── Employee shell (bottom nav) ────────────────────────
-      // WHY StatefulShellRoute.indexedStack: preserves each
-      // tab's state — no reload when switching between tabs
-      StatefulShellRoute.indexedStack(
-        builder: (context, state, navigationShell) {
-          // AppShell provides the bottom navigation bar wrapper
-          return AppShell(navigationShell: navigationShell);
-        },
-        branches: [
-          // Branch 0 → Home tab
-          StatefulShellBranch(
-            navigatorKey: _homeNavKey,
-            routes: [
-              GoRoute(
-                path: AppRoutes.home,
-                builder: (_, __) => const HomePage(),
-              ),
-            ],
-          ),
-
-          // Branch 1 → History tab
-          StatefulShellBranch(
-            navigatorKey: _historyNavKey,
-            routes: [
-              GoRoute(
-                path: '/history',
-                builder: (_, __) => const HistoryScreen(),
-              ),
-            ],
-          ),
-
-          // Branch 2 → Profile tab
-          StatefulShellBranch(
-            navigatorKey: _profileNavKey,
-            routes: [
-              GoRoute(
-                path: AppRoutes.profile,
-                builder: (_, __) => const ProfilePage(),
-              ),
-            ],
-          ),
-        ],
+      // ── Admin ────────────────────────────────────────────────
+      GoRoute(
+        path: AppRoutes.admin,
+        builder: (_, __) => const AdminDashboardPage(),
+      ),
+      GoRoute(
+        path: AppRoutes.adminLeave,
+        builder: (_, __) => const AdminLeavePage(),
+      ),
+      GoRoute(
+        path: AppRoutes.adminReports,
+        builder: (_, __) => const AdminReportsPage(),
       ),
     ],
   );
 });
+
+// ── _RouterNotifier ───────────────────────────────────────────
+// WHY: GoRouter.refreshListenable needs a ChangeNotifier —
+//   Riverpod providers are not ChangeNotifiers natively
+class _RouterNotifier extends ChangeNotifier {
+  _RouterNotifier(Ref ref) {
+    ref.listen<AuthState>(authStateProvider, (_, __) => notifyListeners());
+  }
+}

@@ -5,18 +5,19 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'core/router/app_router.dart';
 import 'core/theme/app_theme.dart';
 import 'core/utils/app_logger.dart';
+import 'core/services/realtime_notification_service.dart';
 import 'data/remote/supabase_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // WHY: Portrait lock — attendance UX doesn't benefit from landscape
+  // WHY: Portrait lock — attendance UX doesn't need landscape
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
   ]);
 
-  // WHY: Transparent bars make the splash gradient full-bleed
+  // WHY: Transparent bars make splash gradient full-bleed
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
@@ -29,6 +30,11 @@ Future<void> main() async {
     AppLogger.info('✅ Hive initialised');
 
     await SupabaseService.initialize();
+
+    // ── Notification service ───────────────────────────────
+    // WHY after Supabase: NotificationService uses
+    // Supabase.instance.client — must be ready first
+    await RealtimeNotificationService.instance.initialize();
   } catch (e, st) {
     AppLogger.fatal('❌ Init failed', e, st);
     rethrow;
