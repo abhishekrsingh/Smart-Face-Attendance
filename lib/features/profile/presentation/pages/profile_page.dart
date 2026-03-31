@@ -1,17 +1,23 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart'; // ← NEW import
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../../../core/providers/theme_provider.dart'; // ← NEW import
 import '../../data/profile_repository.dart';
 
-class ProfilePage extends StatefulWidget {
+// ← CHANGED: StatefulWidget → ConsumerStatefulWidget
+//   WHY: needs ref.watch(themeModeProvider) for dark mode toggle
+//   StatefulWidget has no access to Riverpod ref
+class ProfilePage extends ConsumerStatefulWidget {
   const ProfilePage({super.key});
 
   @override
-  State<ProfilePage> createState() => _ProfilePageState();
+  ConsumerState<ProfilePage> createState() => _ProfilePageState();
 }
 
-class _ProfilePageState extends State<ProfilePage> {
+// ← CHANGED: State → ConsumerState (matches ConsumerStatefulWidget)
+class _ProfilePageState extends ConsumerState<ProfilePage> {
   Map<String, dynamic>? profile;
   Map<String, dynamic>? summary;
   bool isLoading = true;
@@ -52,13 +58,11 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   // ── pickAndUploadAvatar() ──────────────────────────────────
-  // PURPOSE: Pick image from gallery, upload to Supabase storage
   Future<void> pickAndUploadAvatar() async {
     final picker = ImagePicker();
     final picked = await picker.pickImage(
       source: ImageSource.gallery,
       maxWidth: 512,
-      // WHY limit: keep avatar file size small
       maxHeight: 512,
       imageQuality: 80,
     );
@@ -137,12 +141,18 @@ class _ProfilePageState extends State<ProfilePage> {
 
   @override
   Widget build(BuildContext context) {
+    // ← NEW: watch theme mode for toggle switch state
+    final themeMode = ref.watch(themeModeProvider);
+    final isDark = themeMode == ThemeMode.dark;
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('My Profile'),
+        // ← CHANGED: 'My Profile' → 'Profile'
+        //   WHY: HomePage AppBar already hides on profile tab —
+        //   no double header. 'Profile' is cleaner, shorter
+        title: const Text('Profile'),
         centerTitle: true,
         actions: [
-          // Refresh
           IconButton(
             icon: const Icon(Icons.refresh_rounded),
             onPressed: loadAll,
@@ -179,7 +189,7 @@ class _ProfilePageState extends State<ProfilePage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // ── Avatar + Info card ──────────────
+                    // ── Avatar + Info card ─────────────
                     _AvatarCard(
                       profile: profile!,
                       isUploading: isUploading,
@@ -188,7 +198,7 @@ class _ProfilePageState extends State<ProfilePage> {
                     ),
                     const SizedBox(height: 20),
 
-                    // ── Attendance summary ──────────────
+                    // ── Attendance summary ─────────────
                     if (summary != null) ...[
                       _SectionHeader(
                         icon: Icons.bar_chart_rounded,
@@ -201,7 +211,22 @@ class _ProfilePageState extends State<ProfilePage> {
                       const SizedBox(height: 20),
                     ],
 
-                    // ── Account section ─────────────────
+                    // ── Appearance section ─────────────
+                    // ← NEW: dark mode toggle section
+                    const _SectionHeader(
+                      icon: Icons.palette_rounded,
+                      title: 'Appearance',
+                    ),
+                    const SizedBox(height: 12),
+
+                    // ← NEW: Dark mode toggle tile
+                    // WHY InkWell not _SettingsTile: toggle
+                    //   needs a Switch widget on trailing —
+                    //   _SettingsTile only has chevron
+                    _DarkModeTile(isDark: isDark),
+                    const SizedBox(height: 20),
+
+                    // ── Account section ────────────────
                     const _SectionHeader(
                       icon: Icons.manage_accounts_rounded,
                       title: 'Account',
@@ -244,7 +269,8 @@ class _ProfilePageState extends State<ProfilePage> {
                             ),
                             title: const Text('Sign Out'),
                             content: const Text(
-                              'Are you sure you want to sign out?',
+                              'Are you sure you want '
+                              'to sign out?',
                             ),
                             actions: [
                               TextButton(
@@ -280,10 +306,90 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 }
 
+// ── _DarkModeTile ─────────────────────────────────────────────
+// ← NEW widget
+// PURPOSE: Toggle dark/light mode + persist via Hive
+// WHY Consumer here not in parent: isolates rebuild to just
+//   this tile — parent ProfilePage doesn't rebuild on toggle
+class _DarkModeTile extends ConsumerWidget {
+  final bool isDark;
+  const _DarkModeTile({required this.isDark});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return InkWell(
+      onTap: () => ref.read(themeModeProvider.notifier).toggle(),
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surface,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.2),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.03),
+              blurRadius: 6,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            // ── Icon ────────────────────────────────────
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.deepPurple.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(
+                isDark ? Icons.dark_mode_rounded : Icons.light_mode_rounded,
+                size: 18,
+                color: Colors.deepPurple,
+              ),
+            ),
+            const SizedBox(width: 14),
+
+            // ── Label ────────────────────────────────────
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Dark Mode',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                  ),
+                  Text(
+                    isDark ? 'Dark theme active' : 'Light / System theme',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.onSurface.withValues(alpha: 0.5),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // ── Switch ───────────────────────────────────
+            // WHY Switch not IconButton: visually communicates
+            //   on/off state — clearer than a toggle icon
+            Switch(
+              value: isDark,
+              onChanged: (_) => ref.read(themeModeProvider.notifier).toggle(),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 // ── _AvatarCard ───────────────────────────────────────────────
-// PURPOSE: Shows avatar, name, email, department, role badge
-// WHY ClipOval + BoxFit.cover: fills circle with no gap —
-//   CircleAvatar backgroundImage leaves a visible edge gap
 class _AvatarCard extends StatelessWidget {
   final Map<String, dynamic> profile;
   final bool isUploading;
@@ -320,10 +426,9 @@ class _AvatarCard extends StatelessWidget {
       ),
       child: Column(
         children: [
-          // ── Avatar with camera overlay ──────────────────────
+          // ── Avatar with camera overlay ───────────────
           Stack(
             children: [
-              // ── Circle container ────────────────────────────
               Container(
                 width: 96,
                 height: 96,
@@ -336,16 +441,15 @@ class _AvatarCard extends StatelessWidget {
                   ),
                 ),
                 child: ClipOval(
-                  // WHY ClipOval: clips image tightly to the
-                  // circle — no gap at edges unlike CircleAvatar
                   child: avatarUrl != null
                       ? Image.network(
                           // WHY cache bust: ensures re-uploaded
-                          // avatar shows immediately
+                          // avatar shows immediately without
+                          // waiting for HTTP cache to expire
                           '$avatarUrl?t=${DateTime.now().millisecondsSinceEpoch}',
                           width: 96,
                           height: 96,
-                          fit: BoxFit.cover, // ← fills circle fully
+                          fit: BoxFit.cover,
                           loadingBuilder: (_, child, progress) {
                             if (progress == null) return child;
                             return Center(
@@ -365,7 +469,7 @@ class _AvatarCard extends StatelessWidget {
                 ),
               ),
 
-              // ── Upload loading overlay ──────────────────────
+              // ── Upload loading overlay ───────────────
               if (isUploading)
                 Positioned.fill(
                   child: Container(
@@ -382,7 +486,7 @@ class _AvatarCard extends StatelessWidget {
                   ),
                 ),
 
-              // ── Camera icon ─────────────────────────────────
+              // ── Camera icon ──────────────────────────
               if (!isUploading)
                 Positioned(
                   right: 0,
@@ -413,7 +517,7 @@ class _AvatarCard extends StatelessWidget {
           ),
           const SizedBox(height: 16),
 
-          // ── Name ────────────────────────────────────────────
+          // ── Name ─────────────────────────────────────
           Text(
             name,
             style: const TextStyle(
@@ -424,7 +528,7 @@ class _AvatarCard extends StatelessWidget {
           ),
           const SizedBox(height: 4),
 
-          // ── Email ────────────────────────────────────────────
+          // ── Email ─────────────────────────────────────
           Text(
             email,
             style: TextStyle(
@@ -434,7 +538,7 @@ class _AvatarCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
 
-          // ── Department + Role row ───────────────────────────
+          // ── Department + Role row ─────────────────────
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
@@ -470,7 +574,6 @@ class _AvatarCard extends StatelessWidget {
                 const SizedBox(width: 8),
               ],
 
-              // ── Role badge ──────────────────────────────────
               Container(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 10,
@@ -489,7 +592,7 @@ class _AvatarCard extends StatelessWidget {
           ),
           const SizedBox(height: 16),
 
-          // ── Edit Profile button ─────────────────────────────
+          // ── Edit Profile button ───────────────────────
           SizedBox(
             width: double.infinity,
             child: OutlinedButton.icon(
@@ -516,7 +619,6 @@ class _AvatarCard extends StatelessWidget {
     );
   }
 
-  // ── Fallback: initial letter when no avatar set ─────────────
   Widget _avatarFallback(String name) => Container(
     color: Colors.white.withValues(alpha: 0.2),
     child: Center(
@@ -533,17 +635,14 @@ class _AvatarCard extends StatelessWidget {
 }
 
 // ── _AttendanceSummaryGrid ────────────────────────────────────
-// PURPOSE: 2×2 grid showing monthly attendance stats
 class _AttendanceSummaryGrid extends StatelessWidget {
   final Map<String, dynamic> summary;
-
   const _AttendanceSummaryGrid({required this.summary});
 
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
-        // Row 1 — Present | WFH
         Row(
           children: [
             Expanded(
@@ -568,8 +667,6 @@ class _AttendanceSummaryGrid extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 10),
-
-        // Row 2 — Absent | Late
         Row(
           children: [
             Expanded(
@@ -594,8 +691,6 @@ class _AttendanceSummaryGrid extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 10),
-
-        // Row 3 — Total hours (full width)
         _StatCard(
           emoji: '🕐',
           label: 'Total Hours This Month',
@@ -705,7 +800,6 @@ class _StatCard extends StatelessWidget {
 class _SectionHeader extends StatelessWidget {
   final IconData icon;
   final String title;
-
   const _SectionHeader({required this.icon, required this.title});
 
   @override
@@ -767,7 +861,6 @@ class _SettingsTile extends StatelessWidget {
         ),
         child: Row(
           children: [
-            // Icon container
             Container(
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
@@ -777,8 +870,6 @@ class _SettingsTile extends StatelessWidget {
               child: Icon(icon, size: 18, color: iconColor),
             ),
             const SizedBox(width: 14),
-
-            // Title + subtitle
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -816,7 +907,6 @@ class _SettingsTile extends StatelessWidget {
 }
 
 // ── EditProfileSheet ──────────────────────────────────────────
-// PURPOSE: Edit name and department in a bottom sheet
 class EditProfileSheet extends StatefulWidget {
   final String currentName;
   final String currentDepartment;
@@ -900,8 +990,6 @@ class _EditProfileSheetState extends State<EditProfileSheet> {
               ),
             ),
           ),
-
-          // Title
           const Row(
             children: [
               Icon(Icons.edit_rounded, size: 20),
@@ -913,8 +1001,6 @@ class _EditProfileSheetState extends State<EditProfileSheet> {
             ],
           ),
           const SizedBox(height: 20),
-
-          // Name
           const Text(
             'Full Name',
             style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
@@ -933,8 +1019,6 @@ class _EditProfileSheetState extends State<EditProfileSheet> {
             ),
           ),
           const SizedBox(height: 16),
-
-          // Department
           const Text(
             'Department',
             style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
@@ -953,8 +1037,6 @@ class _EditProfileSheetState extends State<EditProfileSheet> {
             ),
           ),
           const SizedBox(height: 24),
-
-          // Save
           SizedBox(
             width: double.infinity,
             height: 50,
@@ -985,7 +1067,6 @@ class _EditProfileSheetState extends State<EditProfileSheet> {
 }
 
 // ── ChangePasswordSheet ───────────────────────────────────────
-// PURPOSE: Change password with current password verification
 class ChangePasswordSheet extends StatefulWidget {
   const ChangePasswordSheet({super.key});
 
@@ -1088,7 +1169,6 @@ class _ChangePasswordSheetState extends State<ChangePasswordSheet> {
     }
   }
 
-  // WHY extracted: all 3 fields share the same structure
   Widget _passwordField({
     required TextEditingController controller,
     required String label,
@@ -1136,7 +1216,6 @@ class _ChangePasswordSheetState extends State<ChangePasswordSheet> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Handle
             Center(
               child: Container(
                 width: 40,
@@ -1148,8 +1227,6 @@ class _ChangePasswordSheetState extends State<ChangePasswordSheet> {
                 ),
               ),
             ),
-
-            // Title
             const Row(
               children: [
                 Icon(Icons.lock_outline_rounded, size: 20),
@@ -1161,8 +1238,6 @@ class _ChangePasswordSheetState extends State<ChangePasswordSheet> {
               ],
             ),
             const SizedBox(height: 6),
-
-            // Info banner
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               decoration: BoxDecoration(
@@ -1180,8 +1255,8 @@ class _ChangePasswordSheetState extends State<ChangePasswordSheet> {
                   SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      'Enter your current password to verify, '
-                      'then set a new one.',
+                      'Enter your current password '
+                      'to verify, then set a new one.',
                       style: TextStyle(fontSize: 11, color: Colors.blue),
                     ),
                   ),
@@ -1189,8 +1264,6 @@ class _ChangePasswordSheetState extends State<ChangePasswordSheet> {
               ),
             ),
             const SizedBox(height: 20),
-
-            // Current password
             _passwordField(
               controller: currentCtrl,
               label: 'Current Password',
@@ -1199,8 +1272,6 @@ class _ChangePasswordSheetState extends State<ChangePasswordSheet> {
               onToggle: () => setState(() => showCurrent = !showCurrent),
             ),
             const SizedBox(height: 16),
-
-            // New password
             _passwordField(
               controller: newCtrl,
               label: 'New Password',
@@ -1209,8 +1280,6 @@ class _ChangePasswordSheetState extends State<ChangePasswordSheet> {
               onToggle: () => setState(() => showNew = !showNew),
             ),
             const SizedBox(height: 16),
-
-            // Confirm new password
             _passwordField(
               controller: confirmCtrl,
               label: 'Confirm New Password',
@@ -1219,8 +1288,6 @@ class _ChangePasswordSheetState extends State<ChangePasswordSheet> {
               onToggle: () => setState(() => showConfirm = !showConfirm),
             ),
             const SizedBox(height: 24),
-
-            // Save
             SizedBox(
               width: double.infinity,
               height: 50,

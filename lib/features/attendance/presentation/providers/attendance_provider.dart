@@ -18,8 +18,8 @@ enum AttendanceStatus {
   locating,
   checkInSuccess,
   checkOutSuccess,
-  autoCheckoutSuccess, // ← NEW: auto checkout at 6 PM
-  afterOfficeHours, // ← NEW: check-in blocked after 6 PM
+  autoCheckoutSuccess,
+  afterOfficeHours,
   faceMismatch,
   faceNotRegistered,
   alreadyCheckedOut,
@@ -115,7 +115,7 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
   @override
   AttendanceState build() => const AttendanceState();
 
-  // ── initialize() ───────────────────────────────────────────
+  // ── initialize() ─────────────────────────────────────────
   Future<void> initialize() async {
     state = state.copyWith(
       status: AttendanceStatus.initializing,
@@ -123,36 +123,49 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
     );
     try {
       await _faceMLService.initialize();
+      // ← FIXED: provider may have been disposed while
+      //   faceML was loading — guard all state writes
+      //   after every await with ref.mounted check
+      if (!ref.mounted) return;
       AppLogger.info('✅ FaceML ready');
 
       await _cameraService.initialize();
+      if (!ref.mounted) return; // ← FIXED
       AppLogger.info('✅ Camera ready');
 
-      // Auto-checkout missed records from past days
       final autoCount = await attendanceRepository.checkForMissedCheckout();
+      if (!ref.mounted) return; // ← FIXED
       if (autoCount > 0) {
         AppLogger.info('✅ Auto-checked out $autoCount missed record(s)');
       }
 
       await _loadTodayAttendance();
+      if (!ref.mounted) return; // ← FIXED: _loadTodayAttendance
+      //   itself has multiple awaits internally — by the time
+      //   it returns, provider may already be disposed.
+      //   This is the line that was crashing at line 143
 
-      // ── Auto-checkout if after 6 PM and still checked in ───
-      // WHY here: employee opens mark attendance after 6 PM
-      // with pending checkout → auto-complete it immediately
-      // → UI detects autoCheckoutSuccess → shows dialog → pops
+      // ── Auto-checkout if after 6 PM and still checked in
       if (state.hasCheckedIn &&
           !state.hasCheckedOut &&
           DateTime.now().hour >= 18) {
         await _autoCheckoutAtSixPm();
-        return; // skip cameraReady — dialog will pop page
+        // WHY no ref.mounted here: _autoCheckoutAtSixPm()
+        //   guards itself internally + we return immediately
+        return;
       }
 
+      // ← FIXED: guard before final state write
+      if (!ref.mounted) return;
       state = state.copyWith(
         status: AttendanceStatus.cameraReady,
         message: null,
       );
     } catch (e, st) {
       AppLogger.error('Initialize failed', e, st);
+      // ← FIXED: even catch block state write needs guard —
+      //   exception could have been thrown after dispose
+      if (!ref.mounted) return;
       state = state.copyWith(
         status: AttendanceStatus.error,
         message: 'Initialization failed. Please restart.',
@@ -160,9 +173,7 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
     }
   }
 
-  // ── _autoCheckoutAtSixPm() ─────────────────────────────────
-  // PURPOSE: Auto-checkout when employee opens app after 6 PM
-  // with a pending check-in. Uses check_in_time + 8h cap.
+  // ── _autoCheckoutAtSixPm() ────────────────────────────────
   Future<void> _autoCheckoutAtSixPm() async {
     try {
       final checkInTime = state.todayRecord?.checkInTime;
@@ -173,10 +184,7 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
         return;
       }
 
-      final checkInUtc = DateTime.parse(checkInTime);
-      // ignore: unused_local_variable
-      final autoCheckOutUtc = checkInUtc.add(const Duration(hours: 8));
-      final totalHours = 8.0; // capped at standard workday
+      final totalHours = 8.0;
 
       await attendanceRepository.checkOut(
         attendanceId: attendanceId,
@@ -184,9 +192,11 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
         lat: null,
         lng: null,
       );
+      if (!ref.mounted) return; // ← FIXED
 
       AppLogger.info(
-        '✅ Auto-checkout at 6 PM: $attendanceId | hours: $totalHours',
+        '✅ Auto-checkout at 6 PM: $attendanceId | '
+        'hours: $totalHours',
       );
 
       state = state.copyWith(
@@ -199,15 +209,19 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
       );
     } catch (e, st) {
       AppLogger.error('autoCheckoutAtSixPm failed', e, st);
-      // WHY not rethrow: non-critical — just go to cameraReady
+      if (!ref.mounted) return; // ← FIXED
       state = state.copyWith(status: AttendanceStatus.cameraReady);
     }
   }
 
-  // ── _loadTodayAttendance() ──────────────────────────────────
+  // ── _loadTodayAttendance() ────────────────────────────────
   Future<void> _loadTodayAttendance() async {
     try {
       final record = await attendanceRepository.getTodayAttendance();
+      if (!ref.mounted) return; // ← FIXED: this is the exact
+      //   line that caused the crash — record fetch succeeded
+      //   but provider was disposed before state could be set
+
       if (record != null) {
         final model = AttendanceModel.fromMap(record);
         state = state.copyWith(
@@ -223,19 +237,18 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
       }
     } catch (e) {
       AppLogger.error('Load today attendance failed', e);
+      // WHY no ref.mounted here: no state write in catch —
+      //   just logging, safe to call even after dispose
     }
   }
 
-  // ── markAttendance() ───────────────────────────────────────
+  // ── markAttendance() ─────────────────────────────────────
   Future<void> markAttendance() async {
     if (state.hasCheckedIn && state.hasCheckedOut) {
       await _handleReCheckIn();
       return;
     }
 
-    // ── Block check-in after 6 PM ──────────────────────────
-    // WHY only blocks !hasCheckedIn: checkout must always
-    // be allowed — employee leaving at 7 PM needs to check out
     if (!state.hasCheckedIn && DateTime.now().hour >= 18) {
       state = state.copyWith(
         status: AttendanceStatus.afterOfficeHours,
@@ -248,9 +261,11 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
     }
 
     try {
-      // ── Step 1: Capture ────────────────────────────────────
+      // ── Step 1: Capture ──────────────────────────────────
       state = state.copyWith(status: AttendanceStatus.detecting, message: null);
       final imageFile = await _cameraService.captureImage();
+      if (!ref.mounted) return; // ← FIXED
+
       if (imageFile == null) {
         state = state.copyWith(
           status: AttendanceStatus.error,
@@ -259,31 +274,39 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
         return;
       }
 
-      // ── Step 2: Extract embedding ──────────────────────────
+      // ── Step 2: Extract embedding ────────────────────────
       state = state.copyWith(status: AttendanceStatus.processing);
       final capturedEmbedding = await _faceMLService.extractEmbedding(
         imageFile,
       );
+      if (!ref.mounted) return; // ← FIXED
+
       if (capturedEmbedding == null) {
         state = state.copyWith(
           status: AttendanceStatus.error,
-          message: 'No face detected.\nPlease look at the camera.',
+          message:
+              'No face detected.\n'
+              'Please look at the camera.',
         );
         return;
       }
 
-      // ── Step 3: Fetch stored embedding ─────────────────────
+      // ── Step 3: Fetch stored embedding ──────────────────
       state = state.copyWith(status: AttendanceStatus.verifying);
       final storedEmbedding = await faceRepository.getStoredEmbedding();
+      if (!ref.mounted) return; // ← FIXED
+
       if (storedEmbedding == null) {
         state = state.copyWith(
           status: AttendanceStatus.faceNotRegistered,
-          message: 'Face not registered.\nPlease register first.',
+          message:
+              'Face not registered.\n'
+              'Please register first.',
         );
         return;
       }
 
-      // ── Step 4: Compare ────────────────────────────────────
+      // ── Step 4: Compare ──────────────────────────────────
       final cosine = FaceMLService.cosineSimilarity(
         storedEmbedding,
         capturedEmbedding,
@@ -294,7 +317,8 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
       );
 
       AppLogger.debug(
-        'Face match → cosine: ${cosine.toStringAsFixed(3)}, match: $isMatch',
+        'Face match → cosine: '
+        '${cosine.toStringAsFixed(3)}, match: $isMatch',
       );
 
       if (!isMatch) {
@@ -308,7 +332,7 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
         return;
       }
 
-      // ── Step 5: GPS (check-in only) ────────────────────────
+      // ── Step 5: GPS (check-in only) ──────────────────────
       if (!state.hasCheckedIn) {
         state = state.copyWith(
           status: AttendanceStatus.locating,
@@ -316,6 +340,7 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
         );
 
         final locationResult = await _locationService.getAttendanceStatus();
+        if (!ref.mounted) return; // ← FIXED
 
         AppLogger.info(
           '📍 GPS → ${locationResult.status} | '
@@ -336,16 +361,19 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
             ? 'present'
             : 'wfh';
 
-        // ── Step 6a: Save Check In ─────────────────────────
+        // ── Step 6a: Save Check In ───────────────────────
         final response = await attendanceRepository.checkIn(
           confidence: cosine,
           lat: locationResult.lat,
           lng: locationResult.lng,
           status: attendanceStatus,
         );
+        if (!ref.mounted) return; // ← FIXED
+
         final model = AttendanceModel.fromMap(response);
-        final distanceText = locationResult.distanceKm != null
-            ? '\n📍 ${locationResult.distanceKm!.toStringAsFixed(1)} km from office'
+        final distText = locationResult.distanceKm != null
+            ? '\n📍 ${locationResult.distanceKm!.toStringAsFixed(1)}'
+                  ' km from office'
             : '';
 
         state = state.copyWith(
@@ -354,7 +382,7 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
               'Check-in successful! '
               '${attendanceStatus == 'present' ? '🏢' : '🏠'}\n'
               '${attendanceStatus == 'present' ? 'Work From Office' : 'Work From Home'}'
-              '$distanceText',
+              '$distText',
           confidence: cosine,
           hasCheckedIn: true,
           hasCheckedOut: false,
@@ -363,16 +391,18 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
           attendanceId: response['id'] as String?,
         );
         AppLogger.info(
-          '✅ Check-in: ${response['id']} | status: $attendanceStatus',
+          '✅ Check-in: ${response['id']} | '
+          'status: $attendanceStatus',
         );
       } else {
-        // ── Step 6b: Check Out ─────────────────────────────
+        // ── Step 6b: Check Out ───────────────────────────
         final checkInTime = state.todayRecord?.checkInTime;
         final attendanceId = state.attendanceId;
 
         if (checkInTime == null || attendanceId == null) {
           AppLogger.error('checkOut: null checkInTime or attendanceId');
           await _loadTodayAttendance();
+          if (!ref.mounted) return; // ← FIXED
           state = state.copyWith(
             status: AttendanceStatus.error,
             message: 'Session expired. Please try again.',
@@ -386,13 +416,15 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
           lat: null,
           lng: null,
         );
-        final model = AttendanceModel.fromMap(response);
+        if (!ref.mounted) return; // ← FIXED
 
+        final model = AttendanceModel.fromMap(response);
         state = state.copyWith(
           status: AttendanceStatus.checkOutSuccess,
           message:
               'Check-out successful! ✅\n'
-              '⏱ ${response['total_hours']?.toStringAsFixed(1) ?? '--'} hrs today',
+              '⏱ ${response['total_hours']?.toStringAsFixed(1) ?? '--'}'
+              ' hrs today',
           confidence: cosine,
           hasCheckedOut: true,
           todayRecord: model,
@@ -401,6 +433,7 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
       }
     } catch (e, st) {
       AppLogger.error('markAttendance failed', e, st);
+      if (!ref.mounted) return; // ← FIXED
       state = state.copyWith(
         status: AttendanceStatus.error,
         message: 'Something went wrong.\nPlease try again.',
@@ -408,11 +441,8 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
     }
   }
 
-  // ── _handleReCheckIn() ─────────────────────────────────────
+  // ── _handleReCheckIn() ───────────────────────────────────
   Future<void> _handleReCheckIn() async {
-    // ── Block re-check-in after 6 PM ──────────────────────────
-    // WHY: office hours ended — no point re-checking in
-    // Hours would count from 6 PM+ which we don't want
     if (DateTime.now().hour >= 18) {
       state = state.copyWith(
         status: AttendanceStatus.afterOfficeHours,
@@ -428,6 +458,8 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
       state = state.copyWith(status: AttendanceStatus.detecting, message: null);
 
       final imageFile = await _cameraService.captureImage();
+      if (!ref.mounted) return; // ← FIXED
+
       if (imageFile == null) {
         state = state.copyWith(
           status: AttendanceStatus.error,
@@ -440,20 +472,28 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
       final capturedEmbedding = await _faceMLService.extractEmbedding(
         imageFile,
       );
+      if (!ref.mounted) return; // ← FIXED
+
       if (capturedEmbedding == null) {
         state = state.copyWith(
           status: AttendanceStatus.error,
-          message: 'No face detected.\nPlease look at the camera.',
+          message:
+              'No face detected.\n'
+              'Please look at the camera.',
         );
         return;
       }
 
       state = state.copyWith(status: AttendanceStatus.verifying);
       final storedEmbedding = await faceRepository.getStoredEmbedding();
+      if (!ref.mounted) return; // ← FIXED
+
       if (storedEmbedding == null) {
         state = state.copyWith(
           status: AttendanceStatus.faceNotRegistered,
-          message: 'Face not registered.\nPlease register first.',
+          message:
+              'Face not registered.\n'
+              'Please register first.',
         );
         return;
       }
@@ -481,6 +521,7 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
       final attendanceId = state.attendanceId;
       if (attendanceId == null) {
         await _loadTodayAttendance();
+        if (!ref.mounted) return; // ← FIXED
         state = state.copyWith(
           status: AttendanceStatus.error,
           message: 'Session expired. Please try again.',
@@ -491,8 +532,9 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
       final response = await attendanceRepository.reCheckIn(
         attendanceId: attendanceId,
       );
-      final model = AttendanceModel.fromMap(response);
+      if (!ref.mounted) return; // ← FIXED
 
+      final model = AttendanceModel.fromMap(response);
       state = state.copyWith(
         status: AttendanceStatus.checkInSuccess,
         message: 'Welcome back! Checked in again ✅',
@@ -503,6 +545,7 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
       AppLogger.info('✅ Re check-in: ${response['id']}');
     } catch (e, st) {
       AppLogger.error('Re check-in failed', e, st);
+      if (!ref.mounted) return; // ← FIXED
       state = state.copyWith(
         status: AttendanceStatus.error,
         message: 'Something went wrong.\nPlease try again.',
@@ -519,10 +562,11 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
   }
 }
 
-// attendance_provider.dart — last line
-// ✅ autoDispose: provider resets when no widget is watching it
-// WHY: when user logs out → navigates away from attendance page
-// → provider disposes → fresh state on next login
+// ✅ autoDispose: provider resets when no widget is watching
+// WHY: user logs out → navigates away → provider disposes →
+//   fresh state on next login. The ref.mounted guards above
+//   are REQUIRED because of autoDispose — without them any
+//   pending async op after navigation throws the error you saw
 final attendanceProvider =
     NotifierProvider.autoDispose<AttendanceNotifier, AttendanceState>(
       AttendanceNotifier.new,
