@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:table_calendar/table_calendar.dart';
 import '../../data/attendance_repository.dart';
+import '../../../../features/tasks/presentation/providers/task_provider.dart'; // ← NEW
+import '../../../../features/tasks/presentation/widgets/task_section.dart'; // ← NEW
 
 class HistoryScreen extends ConsumerStatefulWidget {
   const HistoryScreen({super.key});
@@ -54,6 +56,15 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
             ..addAll(map);
           _isLoading = false;
         });
+
+        // ← NEW: load tasks for all days in this month
+        // WHY after setState: _allDaysInMonth uses _focusedMonth
+        //   which is already set; one batch call covers all days
+        //   including weekends that may have tasks but no attendance
+        final allDates = _allDaysInMonth.map((e) => e.dateStr).toList();
+        if (allDates.isNotEmpty) {
+          ref.read(taskProvider.notifier).loadForDates(allDates);
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -65,7 +76,7 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
     }
   }
 
-  // ── Month navigation ────────────────────────────────────────
+  // ── Month navigation ──────────────────────────────────────
   bool get _canGoNext {
     final now = DateTime.now();
     return _focusedMonth.year < now.year ||
@@ -89,7 +100,7 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
     _loadHistory();
   }
 
-  // ── Helpers ─────────────────────────────────────────────────
+  // ── Helpers ───────────────────────────────────────────────
   String _dateStr(DateTime d) =>
       '${d.year}-'
       '${d.month.toString().padLeft(2, '0')}-'
@@ -108,11 +119,8 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
     };
   }
 
-  // ── Open calendar bottom sheet ──────────────────────────────
-  // WHY bottom sheet not inline: keeps list visible at all times
-  // calendar is just a picker — not the main content
+  // ── Calendar bottom sheet ─────────────────────────────────
   Future<void> _showCalendarSheet() async {
-    // local focused day inside sheet — doesn't affect page until confirmed
     DateTime sheetFocused = _focusedMonth;
     DateTime? sheetSelected = _selectedDay;
 
@@ -131,7 +139,6 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // ── Sheet drag handle ─────────────────────
                   Container(
                     width: 40,
                     height: 4,
@@ -141,8 +148,6 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                       borderRadius: BorderRadius.circular(2),
                     ),
                   ),
-
-                  // ── Header ───────────────────────────────
                   Row(
                     children: [
                       const Icon(Icons.calendar_month_rounded, size: 20),
@@ -161,49 +166,35 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                       ),
                     ],
                   ),
-
                   const Divider(),
-
-                  // ── TableCalendar ─────────────────────────
                   TableCalendar(
                     firstDay: DateTime(2024, 1, 1),
                     lastDay: DateTime.now(),
                     focusedDay: sheetFocused,
-
                     selectedDayPredicate: (day) =>
                         sheetSelected != null && isSameDay(day, sheetSelected!),
-
                     availableGestures: AvailableGestures.horizontalSwipe,
                     pageAnimationEnabled: true,
                     pageAnimationCurve: Curves.easeInOut,
                     pageAnimationDuration: const Duration(milliseconds: 300),
-
                     calendarFormat: CalendarFormat.month,
                     availableCalendarFormats: const {
                       CalendarFormat.month: 'Month',
                     },
-
                     onPageChanged: (focused) {
                       final now = DateTime.now();
-                      if (focused.isAfter(DateTime(now.year, now.month))) {
+                      if (focused.isAfter(DateTime(now.year, now.month)))
                         return;
-                      }
                       setSheetState(() => sheetFocused = focused);
                     },
-
                     onDaySelected: (selected, focused) {
                       if (selected.isAfter(DateTime.now())) return;
                       setSheetState(() {
                         sheetSelected = selected;
                         sheetFocused = focused;
                       });
-
-                      // ── Apply + close ───────────────────────
-                      // WHY delay: let selection animate before closing
                       Future.delayed(const Duration(milliseconds: 150), () {
                         if (ctx.mounted) Navigator.of(ctx).pop();
-
-                        // Update page state
                         final newMonth = DateTime(
                           selected.year,
                           selected.month,
@@ -211,13 +202,10 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                         final monthChanged =
                             newMonth.year != _focusedMonth.year ||
                             newMonth.month != _focusedMonth.month;
-
                         setState(() {
                           _selectedDay = selected;
                           _focusedMonth = newMonth;
                         });
-
-                        // Reload if month changed
                         if (monthChanged) {
                           _loadHistory().then((_) => _scrollToDay(selected));
                         } else {
@@ -225,7 +213,6 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                         }
                       });
                     },
-
                     calendarStyle: CalendarStyle(
                       todayDecoration: BoxDecoration(
                         color: Theme.of(
@@ -258,8 +245,6 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                         ).colorScheme.onSurface.withValues(alpha: 0.2),
                       ),
                     ),
-
-                    // ── Colored dots per day ─────────────────
                     calendarBuilders: CalendarBuilders(
                       defaultBuilder: (ctx, day, _) => _calendarDayCell(
                         ctx,
@@ -291,7 +276,6 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                         ),
                       ),
                     ),
-
                     headerStyle: HeaderStyle(
                       formatButtonVisible: false,
                       titleCentered: true,
@@ -308,7 +292,6 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                         color: Theme.of(context).colorScheme.primary,
                       ),
                     ),
-
                     daysOfWeekStyle: DaysOfWeekStyle(
                       weekdayStyle: TextStyle(
                         fontSize: 11,
@@ -326,8 +309,6 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                       ),
                     ),
                   ),
-
-                  // ── Color legend ─────────────────────────
                   const SizedBox(height: 8),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -350,7 +331,7 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
     );
   }
 
-  // ── Scroll list to tapped day ────────────────────────────────
+  // ── Scroll to day ─────────────────────────────────────────
   void _scrollToDay(DateTime day) {
     final entries = _allDaysInMonth;
     final idx = entries.indexWhere(
@@ -360,7 +341,11 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
           e.date.year == day.year,
     );
     if (idx < 0) return;
-    // Delay scroll until list rebuilds after setState
+    // WHY 84.0: approximate tile height when tasks collapsed.
+    // Actual scroll position may drift when tasks are expanded
+    // WHY 84.0: approximate tile height when tasks collapsed.
+    // Actual scroll position may drift when tasks are expanded
+    // → postFrameCallback ensures list is built before scroll
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
@@ -372,7 +357,7 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
     });
   }
 
-  // ── Calendar day cell with colored dot ──────────────────────
+  // ── Calendar day cell with colored dot ──────────────────
   Widget _calendarDayCell(
     BuildContext ctx,
     DateTime day, {
@@ -430,7 +415,8 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
     );
   }
 
-  // ── All days for list ────────────────────────────────────────
+  // ── All days for list ─────────────────────────────────────
+  // ← CHANGED: _DayEntry now exposes dateStr for taskProvider
   List<_DayEntry> get _allDaysInMonth {
     final now = DateTime.now();
     final lastDay = DateTime(
@@ -463,7 +449,6 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('My Attendance'), centerTitle: true),
       body: GestureDetector(
-        // WHY: swipe anywhere on body switches month
         onHorizontalDragEnd: (d) {
           if (d.primaryVelocity == null) return;
           if (d.primaryVelocity! < -100) _nextMonth();
@@ -471,18 +456,17 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
         },
         child: Column(
           children: [
-            // ── Compact Month Bar (like admin screen) ──────────
+            // ── Month Bar ──────────────────────────────────
             _MonthBar(
               month: _focusedMonth,
               isCurrentMonth: _isCurrentMonth,
               canGoNext: _canGoNext,
               onPrevious: _previousMonth,
               onNext: _nextMonth,
-              // ← calendar icon tap → bottom sheet
               onCalendarTap: _showCalendarSheet,
             ),
 
-            // ── Summary Bar ────────────────────────────────────
+            // ── Summary Bar ────────────────────────────────
             if (!_isLoading && _error == null)
               _MonthlySummary(
                 present: _presentCount,
@@ -491,7 +475,7 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                 late: _lateCount,
               ),
 
-            // ── Day List ───────────────────────────────────────
+            // ── Day List ───────────────────────────────────
             Expanded(
               child: _isLoading
                   ? const Center(child: CircularProgressIndicator())
@@ -529,9 +513,7 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
   }
 }
 
-// ── _MonthBar ─────────────────────────────────────────────────
-// PURPOSE: Compact top bar — same style as admin _DatePickerBar
-// Shows month + year, prev/next arrows, calendar icon to pick
+// ── _MonthBar ──────────────────────────────────────────────────
 class _MonthBar extends StatelessWidget {
   final DateTime month;
   final bool isCurrentMonth;
@@ -565,7 +547,6 @@ class _MonthBar extends StatelessWidget {
       ),
       child: Row(
         children: [
-          // ◀ Prev
           IconButton(
             icon: const Icon(Icons.chevron_left_rounded),
             onPressed: onPrevious,
@@ -575,8 +556,6 @@ class _MonthBar extends StatelessWidget {
               ).colorScheme.surfaceContainerHighest,
             ),
           ),
-
-          // ── Month + calendar tap ─────────────────────────
           Expanded(
             child: GestureDetector(
               onTap: onCalendarTap,
@@ -638,8 +617,6 @@ class _MonthBar extends StatelessWidget {
               ),
             ),
           ),
-
-          // ▶ Next (greyed on current month)
           IconButton(
             icon: Icon(
               Icons.chevron_right_rounded,
@@ -658,7 +635,7 @@ class _MonthBar extends StatelessWidget {
   }
 }
 
-// ── _LegendDot ────────────────────────────────────────────────
+// ── _LegendDot ─────────────────────────────────────────────────
 class _LegendDot extends StatelessWidget {
   final Color color;
   final String label;
@@ -681,7 +658,7 @@ class _LegendDot extends StatelessWidget {
   }
 }
 
-// ── _MonthlySummary ───────────────────────────────────────────
+// ── _MonthlySummary ────────────────────────────────────────────
 class _MonthlySummary extends StatelessWidget {
   final int present;
   final int wfh;
@@ -769,7 +746,8 @@ class _SummaryChip extends StatelessWidget {
   }
 }
 
-// ── _DayTile ──────────────────────────────────────────────────
+// ── _DayTile ───────────────────────────────────────────────────
+// ← CHANGED: TaskSection injected at the bottom of each tile
 class _DayTile extends StatelessWidget {
   final _DayEntry entry;
   final bool isSelected;
@@ -814,6 +792,9 @@ class _DayTile extends StatelessWidget {
     final checkIn = _formatTime(record?['check_in_time'] as String?);
     final checkOut = _formatTime(record?['check_out_time'] as String?);
 
+    // ← NEW: pull attendance ID for task FK
+    final attendanceId = record?['id'] as String?;
+
     return AnimatedContainer(
       duration: const Duration(milliseconds: 250),
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -841,187 +822,200 @@ class _DayTile extends StatelessWidget {
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        child: Row(
+        child: Column(
+          // ← CHANGED: Row → Column so
+          // TaskSection sits below attendance info
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ── Date box ────────────────────────────────────
-            Container(
-              width: 48,
-              height: 52,
-              decoration: BoxDecoration(
-                color: _isWeekend && !hasRecord
-                    ? Colors.grey.withValues(alpha: 0.08)
-                    : color.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(
-                    DateFormat('dd').format(entry.date),
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: hasRecord ? color : Colors.grey,
-                    ),
+            // ── Original attendance row ──────────────
+            Row(
+              children: [
+                // ── Date box ──────────────────────────
+                Container(
+                  width: 48,
+                  height: 52,
+                  decoration: BoxDecoration(
+                    color: _isWeekend && !hasRecord
+                        ? Colors.grey.withValues(alpha: 0.08)
+                        : color.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(10),
                   ),
-                  Text(
-                    DateFormat('EEE').format(entry.date),
-                    style: TextStyle(
-                      fontSize: 10,
-                      color: hasRecord
-                          ? color.withValues(alpha: 0.8)
-                          : Colors.grey,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            const SizedBox(width: 14),
-
-            // ── Status + details ─────────────────────────────
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Text(emoji, style: const TextStyle(fontSize: 16)),
-                      const SizedBox(width: 6),
                       Text(
-                        label,
+                        DateFormat('dd').format(entry.date),
                         style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          color: color,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: hasRecord ? color : Colors.grey,
                         ),
                       ),
-                      if (_isToday) ...[
-                        const SizedBox(width: 6),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 1,
-                          ),
-                          decoration: BoxDecoration(
-                            color: color.withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Text(
-                            'Today',
-                            style: TextStyle(
-                              fontSize: 10,
-                              color: color,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
+                      Text(
+                        DateFormat('EEE').format(entry.date),
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: hasRecord
+                              ? color.withValues(alpha: 0.8)
+                              : Colors.grey,
                         ),
-                      ],
-                      if (isLate) ...[
-                        const SizedBox(width: 6),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 1,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.amber.withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(4),
-                            border: Border.all(
-                              color: Colors.amber.withValues(alpha: 0.5),
-                            ),
-                          ),
-                          child: const Text(
-                            '⚠️ Late',
-                            style: TextStyle(
-                              fontSize: 10,
-                              color: Colors.amber,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                      ],
+                      ),
                     ],
                   ),
+                ),
 
-                  if (hasRecord && checkIn != null) ...[
-                    const SizedBox(height: 4),
-                    Row(
-                      children: [
-                        Icon(
-                          Icons.login_rounded,
-                          size: 12,
-                          color: Colors.green.withValues(alpha: 0.8),
-                        ),
-                        const SizedBox(width: 3),
-                        Text(
-                          checkIn,
-                          style: const TextStyle(
-                            fontSize: 12,
-                            color: Colors.green,
-                          ),
-                        ),
-                        if (checkOut != null) ...[
-                          const SizedBox(width: 10),
-                          Icon(
-                            Icons.logout_rounded,
-                            size: 12,
-                            color: Colors.red.withValues(alpha: 0.8),
-                          ),
-                          const SizedBox(width: 3),
+                const SizedBox(width: 14),
+
+                // ── Status + time details ─────────────
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Text(emoji, style: const TextStyle(fontSize: 16)),
+                          const SizedBox(width: 6),
                           Text(
-                            checkOut,
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: Colors.red,
+                            label,
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: color,
                             ),
                           ),
-                        ],
-                        if (totalHours != null) ...[
-                          const SizedBox(width: 10),
-                          Icon(
-                            Icons.access_time_rounded,
-                            size: 12,
-                            color: Colors.grey.withValues(alpha: 0.8),
-                          ),
-                          const SizedBox(width: 3),
-                          Text(
-                            '${totalHours.toStringAsFixed(1)}h',
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: Colors.grey,
+                          if (_isToday) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 1,
+                              ),
+                              decoration: BoxDecoration(
+                                color: color.withValues(alpha: 0.15),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                'Today',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  color: color,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
                             ),
-                          ),
+                          ],
+                          if (isLate) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 1,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.amber.withValues(alpha: 0.15),
+                                borderRadius: BorderRadius.circular(4),
+                                border: Border.all(
+                                  color: Colors.amber.withValues(alpha: 0.5),
+                                ),
+                              ),
+                              child: const Text(
+                                '⚠️ Late',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  color: Colors.amber,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ],
                         ],
+                      ),
+
+                      if (hasRecord && checkIn != null) ...[
+                        const SizedBox(height: 4),
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.login_rounded,
+                              size: 12,
+                              color: Colors.green.withValues(alpha: 0.8),
+                            ),
+                            const SizedBox(width: 3),
+                            Text(
+                              checkIn,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Colors.green,
+                              ),
+                            ),
+                            if (checkOut != null) ...[
+                              const SizedBox(width: 10),
+                              Icon(
+                                Icons.logout_rounded,
+                                size: 12,
+                                color: Colors.red.withValues(alpha: 0.8),
+                              ),
+                              const SizedBox(width: 3),
+                              Text(
+                                checkOut,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.red,
+                                ),
+                              ),
+                            ],
+                            if (totalHours != null) ...[
+                              const SizedBox(width: 10),
+                              Icon(
+                                Icons.access_time_rounded,
+                                size: 12,
+                                color: Colors.grey.withValues(alpha: 0.8),
+                              ),
+                              const SizedBox(width: 3),
+                              Text(
+                                '${totalHours.toStringAsFixed(1)}h',
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
                       ],
-                    ),
-                  ],
 
-                  if (hasRecord &&
-                      checkIn != null &&
-                      checkOut == null &&
-                      record?['status'] != 'absent') ...[
-                    const SizedBox(height: 2),
-                    Text(
-                      'Still checked in',
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: Colors.blue.withValues(alpha: 0.7),
-                      ),
-                    ),
-                  ],
+                      if (hasRecord &&
+                          checkIn != null &&
+                          checkOut == null &&
+                          record['status'] != 'absent') ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          'Still checked in',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Colors.blue.withValues(alpha: 0.7),
+                          ),
+                        ),
+                      ],
 
-                  if (_isWeekend && !hasRecord)
-                    Text(
-                      'Weekend',
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: Colors.grey.withValues(alpha: 0.6),
-                      ),
-                    ),
-                ],
-              ),
+                      if (_isWeekend && !hasRecord)
+                        Text(
+                          'Weekend',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Colors.grey.withValues(alpha: 0.6),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
             ),
+
+            // ── TaskSection ──────────────────────────────
+            // ← NEW: dropped here — sits below attendance
+            // info, full tile width, collapsed by default
+            TaskSection(date: entry.dateStr, attendanceId: attendanceId),
           ],
         ),
       ),
@@ -1029,7 +1023,7 @@ class _DayTile extends StatelessWidget {
   }
 }
 
-// ── _ErrorView ────────────────────────────────────────────────
+// ── _ErrorView ─────────────────────────────────────────────────
 class _ErrorView extends StatelessWidget {
   final String error;
   final VoidCallback onRetry;
@@ -1060,9 +1054,18 @@ class _ErrorView extends StatelessWidget {
   }
 }
 
-// ── _DayEntry ─────────────────────────────────────────────────
+// ── _DayEntry ──────────────────────────────────────────────────
+// ← CHANGED: added dateStr getter so TaskSection + loadForDates
+//   can reference the formatted date without re-computing it
 class _DayEntry {
   final DateTime date;
   final Map<String, dynamic>? record;
+
   const _DayEntry({required this.date, this.record});
+
+  // "2026-03-31" — matches Supabase DATE column format
+  String get dateStr =>
+      '${date.year}-'
+      '${date.month.toString().padLeft(2, '0')}-'
+      '${date.day.toString().padLeft(2, '0')}';
 }
