@@ -1,140 +1,111 @@
-# ✨ AI Face Recognition Attendance System
+# 🤳 FaceTrack — AI Face Recognition Attendance System
 
-A modern, intelligent, and secure **AI-powered Attendance Management System** built with Flutter, designed to eliminate manual tracking and prevent fraudulent entries.
+> A smart, secure, and AI-powered attendance solution built with Flutter.
+> No proxies. No manual entries. Just your face. ✅
 
 ---
 
 ## 🚀 Overview
 
-This application combines **Face Recognition 🤳** and **Real-time GPS Verification 📍** to ensure every attendance record is authentic and location-validated.
-
-Using **on-device Machine Learning (ML) 🧠**, the system accurately identifies users through facial embeddings, making proxy attendance virtually impossible.
+FaceTrack uses **on-device Face Recognition** + **Real-time GPS** to make every attendance record authentic and tamper-proof. Employees check in with a single tap — the AI does the rest.
 
 ---
 
-## 🧠 How AI Works in This App
+## 🧠 How Face Recognition Works
 
-- 📸 Capture face using camera  
-- 🧍 Detect face using ML Kit  
-- 🔢 Convert face into **embedding (192-dimension vector)** using TFLite  
-- 🔍 Compare embeddings using **cosine similarity**  
-- ✅ Match → Attendance marked  
-- ❌ No match → Rejected  
-
-👉 Ensures fast, accurate, and secure identity verification.
-
----
-
-## 🚀 Key Features
-
-### 🤳 Smart Face Attendance
-- One-tap attendance using face recognition  
-- Real-time identity verification using AI  
-- Prevents proxy and fake attendance  
+```
+📸 Camera Capture
+    ↓
+🧍 Face Detection — ML Kit
+    ↓
+🔢 192-Dimension Embedding — TFLite (ArcFace)
+    ↓
+🔍 Cosine Similarity Comparison
+    ↓
+✅ Match → Attendance Marked   ❌ No Match → Rejected
+```
 
 ---
 
-### 📍 Location-Based Validation
-- GPS-based attendance verification  
-- Ensures user is within allowed location range  
-- Prevents remote check-ins  
+## ✨ Features
 
----
+### 🤳 Face Attendance
 
-### ⏱️ Smart Work Hour Tracking
-- First check-in → start time  
-- Last check-out → end time  
-- Automatic total hours calculation  
+- One-tap check-in using real-time face recognition
+- On-device AI — no server round-trip for matching
+- Prevents proxy and fake attendance completely
+- **Re-check-in** support if accidentally checked out
 
----
+### 📍 Location Validation
 
-### 📊 Intelligent Status System
-- ✅ Present (≥ 8 hours)  
-- 🌓 Half Day (≥ 4 hours)  
-- 🏠 Work From Home (WFH) (< 4 hours)  
-- ⏰ Late (check-in after 10:00 AM)  
+- GPS coordinates captured on every check-in
+- Location stored and verifiable per record
 
----
+### ⏱️ Work Hour Tracking
 
-### 👨‍💻 Employee Features
-- ⚡ Real-time attendance status  
-- 📅 Attendance history & insights  
-- 👤 Profile with monthly analytics  
-- 📊 Performance tracking  
+- Auto start/stop timer on check-in and check-out
+- Total hours calculated and stored automatically
 
----
+### 📊 Smart Status System
 
-### 🧑‍💼 Admin Features
-- 📊 Dashboard with employee status  
-- 🟢🟡🔴 Attendance summaries (Present / WFH / Absent / Late)  
-- 🎯 Filters for easy tracking  
-- ⚙️ Manage and control attendance records  
+| Status     | Condition                |
+| ---------- | ------------------------ |
+| ✅ Present | Checked in               |
+| 🏠 WFH     | Work From Home           |
+| ❌ Absent  | No check-in              |
+| ⏰ Late    | Check-in after threshold |
 
----
+### 📅 Attendance History
 
-### 📅 History & Analytics
-- View past attendance records  
-- Monthly performance insights  
-- Attendance percentage tracking  
+- Full monthly view with date navigation
+- Per-day detail: check-in time, check-out time, hours, late badge
+- Monthly summary — Present / WFH / Absent / Late counts
 
----
+### ✅ Daily Task Management
 
-### 🔔 Smart Notifications
-- ⏰ Check-in reminder (morning)  
-- 🕕 Check-out reminder (evening)  
+- Add, edit, delete tasks per attendance day
+- Three statuses: **Pending → In Progress → Done**
+- Tap status chip to cycle — instant update
+- Tasks are linked to the day's attendance record
 
----
+### 👤 Profile & Analytics
 
-### 📶 Offline Support
-- Store attendance locally  
-- Auto sync when internet is available  
-
----
-
-### 🎨 UI / UX
-- Smooth animations  
-- Clean and modern design  
-- Responsive and user-friendly interface  
-- Dark mode support  
-
----
-
-## 🔐 Security & Reliability
-
-- 🧠 AI-based face verification  
-- 📍 Location-based validation  
-- 🔒 Role-based access control  
-- 📶 Offline-first architecture  
-- 🔁 Face re-registration protection  
-- 🔐 Secure authentication (Supabase)  
+- View and edit name, department, avatar
+- Monthly stats grid — hours, attendance breakdown
+- Change password with current-password verification
 
 ---
 
 ## 🏗️ Tech Stack
 
-- **Flutter** — UI Framework  
-- **Riverpod** — State Management  
-- **GoRouter** — Navigation  
-- **Supabase** — Auth + Database + Storage  
-- **ML Kit** — Face Detection  
-- **TensorFlow Lite** — Face Embeddings  
-- **Geolocator** — Location Tracking  
-- **Hive / SharedPreferences** — Local Storage  
+| Layer           | Tech                           |
+| --------------- | ------------------------------ |
+| UI              | Flutter                        |
+| State           | Riverpod                       |
+| Navigation      | GoRouter                       |
+| Backend         | Supabase (Auth + DB + Storage) |
+| Face Detection  | ML Kit                         |
+| Face Embeddings | TensorFlow Lite                |
+| Location        | Geolocator                     |
+| Local DB        | Isar                           |
+| Image           | image_picker                   |
 
 ---
 
-## 💡 Why This App?
+## 🔐 Security
 
-- 🚫 Eliminates proxy attendance  
-- ⚡ Fast and real-time processing  
-- 🔐 Highly secure system  
-- 📊 Data-driven insights  
-- 🌍 Scalable for real-world use  
-
----
-
-## 🏁 Conclusion
-
-This project delivers a **secure, scalable, and enterprise-ready attendance solution** powered by AI and modern mobile technologies, ensuring accuracy, transparency, and efficiency in workforce management.
+- 🧠 On-device face matching — embeddings never sent to server
+- 📍 GPS coordinates recorded per check-in
+- 🔒 Supabase RLS — users access only their own data
+- 👤 Role-based access: `employee` / `admin`
 
 ---
+
+## 💡 Why FaceTrack?
+
+| Problem            | How We Solve It                                       |
+| ------------------ | ----------------------------------------------------- |
+| Proxy attendance   | Face verified on-device — no spoofing                 |
+| Manual errors      | Fully automated check-in / out                        |
+| No task visibility | Per-day task tracker built-in                         |
+| Slow data loads    | Isar cache → instant UI, Supabase syncs in background |
