@@ -1,8 +1,8 @@
 // ============================================================
-// AttendanceScreen
-// PURPOSE: Main screen showing today's attendance summary.
-// UPDATED: WFH/WFO status badge with emoji shown on right side
-// of status card — updates based on today's check-in status.
+// attendance_screen.dart
+// PURPOSE : Shown at AppRoutes.markAttendance — lets the
+//           employee Check In / Check Out using face scan.
+//           Holiday logic lives in home_page.dart.
 // ============================================================
 
 import 'package:flutter/material.dart';
@@ -19,14 +19,12 @@ class AttendanceScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Attendance'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.history),
-            tooltip: 'View History',
-            onPressed: () => context.push('/history'),
-          ),
-        ],
+        title: const Text('Mark Attendance'),
+        centerTitle: true,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_rounded),
+          onPressed: () => context.pop(),
+        ),
       ),
       body: SafeArea(
         child: Padding(
@@ -34,12 +32,11 @@ class AttendanceScreen extends ConsumerWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // ── Today's Status Card ──────────────────────────
+              // ── Today's status summary card ──────────────
               _TodayStatusCard(state: state),
-
               const SizedBox(height: 20),
 
-              // ── Error Banner ─────────────────────────────────
+              // ── Error banner (shown only on failure) ─────
               if (state.error != null)
                 _Banner(
                   message: state.error!,
@@ -47,7 +44,7 @@ class AttendanceScreen extends ConsumerWidget {
                   icon: Icons.error_outline,
                 ),
 
-              // ── Success Banner ───────────────────────────────
+              // ── Success banner (shown after action) ──────
               if (state.successMessage != null)
                 _Banner(
                   message: state.successMessage!,
@@ -57,12 +54,11 @@ class AttendanceScreen extends ConsumerWidget {
 
               const Spacer(),
 
-              // ── Smart Action Button ──────────────────────────
+              // ── Primary action: Check In or Check Out ────
               _ActionButton(state: state, ref: ref),
-
               const SizedBox(height: 12),
 
-              // ── View History Button ──────────────────────────
+              // ── Secondary: browse history ────────────────
               OutlinedButton.icon(
                 onPressed: () => context.push('/history'),
                 icon: const Icon(Icons.history),
@@ -84,9 +80,8 @@ class AttendanceScreen extends ConsumerWidget {
 
 // ============================================================
 // _TodayStatusCard
-// PURPOSE: Shows full today summary — first check-in,
-// last check-out, total hours, late badge, WFH/WFO badge.
-// WFH/WFO shown on RIGHT side with emoji for quick scan.
+// PURPOSE : Shows today's summary — status, check-in/out
+//           times, total hours, late badge, WFO/WFH badge.
 // ============================================================
 class _TodayStatusCard extends StatelessWidget {
   final AttendanceState state;
@@ -94,7 +89,6 @@ class _TodayStatusCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // WHY status-based color: instant visual status at a glance
     final statusColor = switch (state.todayStatus) {
       'Present' => Colors.green,
       'WFH' => Colors.blue,
@@ -113,12 +107,10 @@ class _TodayStatusCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── Row 1: Date + WFH/WFO badge ───────────────────
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Left: date + status text
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -137,10 +129,6 @@ class _TodayStatusCard extends StatelessWidget {
                   ),
                 ],
               ),
-
-              // Right: WFO / WFH badge with emoji
-              // WHY right-aligned: lets eye scan date on left
-              // and instantly see office/home status on right
               _WorkModeBadge(hasCheckedIn: state.hasCheckedIn),
             ],
           ),
@@ -149,20 +137,15 @@ class _TodayStatusCard extends StatelessWidget {
           Divider(height: 1, color: statusColor.withValues(alpha: 0.2)),
           const SizedBox(height: 14),
 
-          // ── Row 2: Late badge (only if late) ──────────────
           if (state.isLate) ...[_LateBadge(), const SizedBox(height: 10)],
 
-          // ── Row 3: First Check-In ──────────────────────────
           _TimeRow(
             icon: Icons.login,
             label: 'First Check-In',
             time: state.checkInTime ?? '--:--',
             color: Colors.green,
           ),
-
           const SizedBox(height: 10),
-
-          // ── Row 4: Last Check-Out ──────────────────────────
           _TimeRow(
             icon: Icons.logout,
             label: 'Last Check-Out',
@@ -170,9 +153,6 @@ class _TodayStatusCard extends StatelessWidget {
             color: Colors.red,
           ),
 
-          // ── Row 5: Total Hours ─────────────────────────────
-          // WHY only when not null: totalHours = null while
-          // user is checked in — avoids showing 0.0 mid-day
           if (state.todayRecord?.totalHours != null) ...[
             const SizedBox(height: 10),
             Divider(height: 1, color: statusColor.withValues(alpha: 0.2)),
@@ -198,7 +178,6 @@ class _TodayStatusCard extends StatelessWidget {
             ),
           ],
 
-          // ── Row 6: Currently in office indicator ───────────
           if (state.hasCheckedIn && !state.hasCheckedOut) ...[
             const SizedBox(height: 10),
             Divider(height: 1, color: statusColor.withValues(alpha: 0.2)),
@@ -262,13 +241,7 @@ class _TodayStatusCard extends StatelessWidget {
 }
 
 // ============================================================
-// _WorkModeBadge
-// PURPOSE: Shows WFO or WFH with emoji on RIGHT side of card.
-// WHY separate widget: keeps _TodayStatusCard build() clean.
-//
-// Logic:
-//   hasCheckedIn = true  → 🏢 Work From Office (came to office)
-//   hasCheckedIn = false → 🏠 Work From Home   (no check-in yet)
+// _WorkModeBadge — WFO or WFH pill in top-right of status card
 // ============================================================
 class _WorkModeBadge extends StatelessWidget {
   final bool hasCheckedIn;
@@ -276,7 +249,6 @@ class _WorkModeBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // WHY emoji: universal, no icon asset needed, renders everywhere
     final emoji = hasCheckedIn ? '🏢' : '🏠';
     final label = hasCheckedIn ? 'Work From Office' : 'Work From Home';
     final color = hasCheckedIn ? Colors.green : Colors.blue;
@@ -308,8 +280,7 @@ class _WorkModeBadge extends StatelessWidget {
 }
 
 // ============================================================
-// _LateBadge
-// PURPOSE: Shown only when isLate = true.
+// _LateBadge — amber pill shown only when isLate = true
 // ============================================================
 class _LateBadge extends StatelessWidget {
   @override
@@ -341,8 +312,8 @@ class _LateBadge extends StatelessWidget {
 }
 
 // ============================================================
-// _ActionButton
-// PURPOSE: Smart toggle button — Check In ↔ Check Out.
+// _ActionButton — smart Check In / Check Out toggle
+// WHY passing ref: avoids making this widget a ConsumerWidget
 // ============================================================
 class _ActionButton extends StatelessWidget {
   final AttendanceState state;
@@ -351,9 +322,7 @@ class _ActionButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Case 1: !hasCheckedIn              → Check In  (first entry)
-    // Case 2: hasCheckedIn+hasCheckedOut → Check In  (re-entry)
-    // Case 3: hasCheckedIn+!hasCheckedOut→ Check Out (going out)
+    // True when no check-in yet OR already checked out (re-check-in)
     final isCheckInAction = !state.hasCheckedIn || state.hasCheckedOut;
 
     final label = state.isLoading
@@ -363,7 +332,6 @@ class _ActionButton extends StatelessWidget {
         : 'Check Out';
 
     final icon = isCheckInAction ? Icons.login_rounded : Icons.logout_rounded;
-
     final color = isCheckInAction ? Colors.green : Colors.red;
 
     return ElevatedButton.icon(
@@ -393,7 +361,7 @@ class _ActionButton extends StatelessWidget {
 }
 
 // ============================================================
-// _TimeRow — Icon + label + time in single row
+// _TimeRow — icon + label + time in a single row
 // ============================================================
 class _TimeRow extends StatelessWidget {
   final IconData icon;
@@ -433,7 +401,7 @@ class _TimeRow extends StatelessWidget {
 }
 
 // ============================================================
-// _Banner — success / error message strip
+// _Banner — success / error message strip above action button
 // ============================================================
 class _Banner extends StatelessWidget {
   final String message;

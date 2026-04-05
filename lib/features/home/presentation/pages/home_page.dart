@@ -1,9 +1,19 @@
+// ============================================================
+// home_page.dart
+// PURPOSE : Root screen of the app — bottom nav with 4 tabs:
+//           Dashboard, History, Leave, Profile.
+//           Also owns the weekend holiday dialog + view since
+//           the dashboard (tab 0) is built directly here via
+//           _buildDashboard(), not via AttendanceScreen.
+// ============================================================
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/constants/app_routes.dart';
+import '../../../../core/utils/date_helper.dart'; // ← NEW
 import '../../../attendance/data/attendance_repository.dart';
 import '../../../attendance/presentation/screens/history_screen.dart';
 import '../../../leave/data/leave_repository.dart';
@@ -22,6 +32,13 @@ class _HomePageState extends ConsumerState<HomePage> {
   // ── Bottom nav ─────────────────────────────────────────────
   int _currentIndex = 0;
 
+  // ── Weekend holiday flag ───────────────────────────────────
+  // WHY here: dashboard is _buildDashboard() inside HomePage,
+  //   not AttendanceScreen, so holiday state must live here.
+  // true  = employee chose "I'm working today" on dialog
+  // false = employee is on holiday (show _HolidayView)
+  bool _workingOnWeekend = false;
+
   // ── Dashboard state ────────────────────────────────────────
   String? _todayStatus;
   String? _checkOutTime;
@@ -34,13 +51,43 @@ class _HomePageState extends ConsumerState<HomePage> {
   String? _profileName;
   String? _avatarUrl;
 
+  // ── Lifecycle ──────────────────────────────────────────────
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _loadTodayStatus());
+    // WHY postFrameCallback: context is fully ready after first
+    //   frame — both showDialog and Supabase calls need it
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadTodayStatus();
+      // Show holiday dialog only on Saturday / Sunday
+      if (DateHelper.isTodayWeekend) {
+        _showHolidayDialog();
+      }
+    });
   }
 
-  // ── _loadTodayStatus() ────────────────────────────────────
+  // ── _showHolidayDialog() ───────────────────────────────────
+  // WHY useRootNavigator: true — app uses IndexedStack inside
+  //   a Scaffold, so the local navigator context is the shell.
+  //   Without this, the dialog is swallowed by the shell and
+  //   never renders. useRootNavigator pushes it to the top
+  //   MaterialApp navigator, above everything.
+  Future<void> _showHolidayDialog() async {
+    final result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false, // force a conscious choice
+      useRootNavigator: true,
+      barrierColor: Colors.black.withValues(alpha: 0.6),
+      builder: (_) => _HolidayDialog(date: DateTime.now()),
+    );
+    // result = true  → "I'm working today" was tapped
+    // result = false → "Got it, enjoy holiday!" was tapped
+    if (mounted) {
+      setState(() => _workingOnWeekend = result ?? false);
+    }
+  }
+
+  // ── _loadTodayStatus() ─────────────────────────────────────
   Future<void> _loadTodayStatus() async {
     try {
       final results = await Future.wait([
@@ -48,7 +95,7 @@ class _HomePageState extends ConsumerState<HomePage> {
         profileRepository.getProfile(),
       ]);
 
-      final record = results[0] as Map<String, dynamic>?;
+      final record = results[0];
       final profile = results[1] as Map<String, dynamic>;
 
       if (mounted) {
@@ -58,8 +105,8 @@ class _HomePageState extends ConsumerState<HomePage> {
           _isLate = record?['is_late'] as bool? ?? false;
           _totalHours = (record?['total_hours'] as num?)?.toDouble();
 
-          // WHY avatar_url: matches ProfileRepository.getProfile()
-          //   select — key names are snake_case from Supabase
+          // WHY snake_case: matches Supabase column names returned
+          //   by ProfileRepository.getProfile() select query
           _profileName = profile['full_name'] as String?;
           _avatarUrl = profile['avatar_url'] as String?;
           _isChecking = false;
@@ -70,6 +117,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     }
   }
 
+  // ── Attendance state helper ────────────────────────────────
   _AttendanceState get _attendanceState {
     if (_todayStatus == null) return _AttendanceState.noRecord;
     if (_todayStatus == 'absent') return _AttendanceState.absent;
@@ -77,7 +125,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     return _AttendanceState.checkedOut;
   }
 
-  // ── _markAbsent() ─────────────────────────────────────────
+  // ── _markAbsent() ──────────────────────────────────────────
   Future<void> _markAbsent() async {
     setState(() => _isLoading = true);
 
@@ -94,6 +142,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     setState(() => _isLoading = false);
     if (!mounted) return;
 
+    // ── System error — couldn't verify leave status ──────────
     if (checkFailed) {
       await showDialog(
         context: context,
@@ -125,6 +174,7 @@ class _HomePageState extends ConsumerState<HomePage> {
       return;
     }
 
+    // ── No approved leave — block absent marking ─────────────
     if (!hasApproval) {
       await showDialog(
         context: context,
@@ -161,9 +211,9 @@ class _HomePageState extends ConsumerState<HomePage> {
               ),
               onPressed: () {
                 Navigator.of(ctx, rootNavigator: true).pop();
-                // ── Switch to Leave tab instead of Navigator.push
-                // WHY: Leave is already tab index 2 — no new
-                //   route needed, avoids double back stack
+                // WHY setState index 2: Leave tab is already
+                //   mounted in IndexedStack — no new route
+                //   needed, avoids extra back-stack entry
                 setState(() => _currentIndex = 2);
               },
             ),
@@ -173,6 +223,7 @@ class _HomePageState extends ConsumerState<HomePage> {
       return;
     }
 
+    // ── Confirmed + approved — mark absent ───────────────────
     final confirm = await showDialog<bool>(
       context: context,
       useRootNavigator: true,
@@ -225,8 +276,20 @@ class _HomePageState extends ConsumerState<HomePage> {
     }
   }
 
-  // ── _buildDashboard() ────────────────────────────────────
+  // ── _buildDashboard() ──────────────────────────────────────
   Widget _buildDashboard() {
+    // ── Weekend holiday view ─────────────────────────────────
+    // WHY check here: IndexedStack keeps this widget alive even
+    //   when another tab is active — the check is cheap and
+    //   ensures holiday view persists until user taps "Undo"
+    if (DateHelper.isTodayWeekend && !_workingOnWeekend) {
+      return _HolidayView(
+        date: DateTime.now(),
+        // Tapping "I need to check in anyway" re-shows dashboard
+        onWorkAnyway: () => setState(() => _workingOnWeekend = true),
+      );
+    }
+
     final attState = _attendanceState;
     final primary = Theme.of(context).colorScheme.primary;
 
@@ -242,6 +305,18 @@ class _HomePageState extends ConsumerState<HomePage> {
               )
             : Column(
                 children: [
+                  // ── Weekend working banner ──────────────
+                  // Shown when employee dismissed holiday
+                  // and chose to work — has Undo option
+                  if (DateHelper.isTodayWeekend && _workingOnWeekend) ...[
+                    _WeekendWorkingBanner(
+                      date: DateTime.now(),
+                      onUndoTap: () =>
+                          setState(() => _workingOnWeekend = false),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+
                   const SizedBox(height: 16),
 
                   // ── Avatar ──────────────────────────────
@@ -294,7 +369,8 @@ class _HomePageState extends ConsumerState<HomePage> {
                   ),
                   const SizedBox(height: 12),
 
-                  // ── Check In / Out / Re-Check ───────────
+                  // ── Check In / Out / Re-Check In ────────
+                  // Hidden when absent — no need to check in
                   if (attState != _AttendanceState.absent)
                     ElevatedButton.icon(
                       onPressed: () async {
@@ -310,6 +386,7 @@ class _HomePageState extends ConsumerState<HomePage> {
                     ),
 
                   // ── Mark Absent ─────────────────────────
+                  // Only shown when no record yet for today
                   if (attState == _AttendanceState.noRecord) ...[
                     const SizedBox(height: 12),
                     OutlinedButton.icon(
@@ -345,22 +422,22 @@ class _HomePageState extends ConsumerState<HomePage> {
     );
   }
 
-  // ── build() ──────────────────────────────────────────────
+  // ── build() ────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
-    // WHY IndexedStack: keeps all tab states alive —
-    //   no re-fetch when switching between tabs
+    // WHY IndexedStack: keeps all tab states alive so switching
+    //   tabs does not re-fetch data or reset scroll position
     final pages = [
-      _buildDashboard(), // 0 — Home
-      const HistoryScreen(), // 1 — History
-      const LeavePage(), // 2 — Leave
-      const ProfilePage(), // 3 — Profile
+      _buildDashboard(), // 0 — Home / Dashboard
+      const HistoryScreen(), // 1 — Attendance history
+      const LeavePage(), // 2 — Leave management
+      const ProfilePage(), // 3 — Profile + settings
     ];
 
     return Scaffold(
-      // WHY null on profile tab: ProfilePage has its own
-      //   AppBar with refresh + edit actions — showing two
-      //   AppBars stacked looks broken and wastes space
+      // WHY null on profile tab: ProfilePage has its own AppBar
+      //   with refresh + edit actions — two stacked AppBars
+      //   would look broken and waste vertical space
       appBar: _currentIndex == 3
           ? null
           : AppBar(
@@ -443,6 +520,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     );
   }
 
+  // ── Helpers ────────────────────────────────────────────────
   String _appBarTitle(int i) => switch (i) {
     0 => 'Dashboard',
     1 => 'History',
@@ -474,10 +552,405 @@ class _HomePageState extends ConsumerState<HomePage> {
 
 enum _AttendanceState { noRecord, checkedIn, checkedOut, absent }
 
-// ── _HomeAvatar ───────────────────────────────────────────────
-// WHY shows initial letter when no avatar: this is correct
-//   fallback behavior — "A" for Abhishek is intentional
-//   until an avatar photo is uploaded in Profile tab
+// ============================================================
+// _HolidayDialog — animated dialog shown on Sat/Sun
+// Animation: emoji bounce → text slide up → buttons fade in
+// ============================================================
+class _HolidayDialog extends StatefulWidget {
+  final DateTime date;
+  const _HolidayDialog({required this.date});
+
+  @override
+  State<_HolidayDialog> createState() => _HolidayDialogState();
+}
+
+class _HolidayDialogState extends State<_HolidayDialog>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<double> _emojiScale;
+  late final Animation<double> _emojiFade;
+  late final Animation<Offset> _contentSlide;
+  late final Animation<double> _contentFade;
+  late final Animation<double> _buttonFade;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    );
+
+    // Emoji: scale 0→1.2→1.0 (overshoot gives bouncy feel)
+    _emojiScale = TweenSequence([
+      TweenSequenceItem(
+        tween: Tween(
+          begin: 0.0,
+          end: 1.2,
+        ).chain(CurveTween(curve: Curves.easeOut)),
+        weight: 60,
+      ),
+      TweenSequenceItem(
+        tween: Tween(
+          begin: 1.2,
+          end: 1.0,
+        ).chain(CurveTween(curve: Curves.elasticOut)),
+        weight: 40,
+      ),
+    ]).animate(_ctrl);
+
+    _emojiFade = Tween(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _ctrl,
+        curve: const Interval(0.0, 0.4, curve: Curves.easeIn),
+      ),
+    );
+
+    _contentSlide = Tween<Offset>(begin: const Offset(0, 0.3), end: Offset.zero)
+        .animate(
+          CurvedAnimation(
+            parent: _ctrl,
+            curve: const Interval(0.3, 0.75, curve: Curves.easeOut),
+          ),
+        );
+
+    _contentFade = Tween(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _ctrl,
+        curve: const Interval(0.3, 0.7, curve: Curves.easeIn),
+      ),
+    );
+
+    _buttonFade = Tween(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _ctrl,
+        curve: const Interval(0.65, 1.0, curve: Curves.easeIn),
+      ),
+    );
+
+    _ctrl.forward();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  String get _dayLabel => DateHelper.weekendLabel(widget.date) ?? 'Weekend';
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      elevation: 0,
+      backgroundColor: Colors.transparent,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(24, 32, 24, 24),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surface,
+          borderRadius: BorderRadius.circular(24),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.15),
+              blurRadius: 30,
+              offset: const Offset(0, 10),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            FadeTransition(
+              opacity: _emojiFade,
+              child: ScaleTransition(
+                scale: _emojiScale,
+                child: Container(
+                  padding: const EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withValues(alpha: 0.1),
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: Colors.orange.withValues(alpha: 0.3),
+                      width: 2,
+                    ),
+                  ),
+                  child: const Text('🏖️', style: TextStyle(fontSize: 56)),
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 24),
+
+            FadeTransition(
+              opacity: _contentFade,
+              child: SlideTransition(
+                position: _contentSlide,
+                child: Column(
+                  children: [
+                    Text(
+                      'Today is $_dayLabel!',
+                      style: theme.textTheme.headlineSmall?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      "It's a holiday 🎉\nRelax and enjoy your day off.",
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: theme.colorScheme.onSurface.withValues(
+                          alpha: 0.55,
+                        ),
+                        height: 1.5,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 8,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: Colors.orange.withValues(alpha: 0.4),
+                        ),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.beach_access_rounded,
+                            size: 16,
+                            color: Colors.orange,
+                          ),
+                          SizedBox(width: 6),
+                          Text(
+                            'No attendance required',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.orange,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 28),
+
+            FadeTransition(
+              opacity: _buttonFade,
+              child: Column(
+                children: [
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      // pop(false) → _workingOnWeekend = false → HolidayView
+                      onPressed: () =>
+                          Navigator.of(context, rootNavigator: true).pop(false),
+                      icon: const Text('🎉', style: TextStyle(fontSize: 16)),
+                      label: const Text('Got it, enjoy holiday!'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.orange,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        textStyle: const TextStyle(
+                          fontWeight: FontWeight.w600,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      // pop(true) → _workingOnWeekend = true → Dashboard
+                      onPressed: () =>
+                          Navigator.of(context, rootNavigator: true).pop(true),
+                      icon: const Text('💪', style: TextStyle(fontSize: 14)),
+                      label: const Text("I'm working today"),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 13),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        textStyle: const TextStyle(fontSize: 13),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================
+// _WeekendWorkingBanner — amber strip shown at top of
+// dashboard when employee chose "I'm working today"
+// ============================================================
+class _WeekendWorkingBanner extends StatelessWidget {
+  final DateTime date;
+  final VoidCallback onUndoTap;
+  const _WeekendWorkingBanner({required this.date, required this.onUndoTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final label = DateHelper.weekendLabel(date) ?? 'Weekend';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.amber.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.amber.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        children: [
+          const Text('💪', style: TextStyle(fontSize: 16)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Working on $label',
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: Colors.amber,
+              ),
+            ),
+          ),
+          GestureDetector(
+            onTap: onUndoTap,
+            child: Text(
+              'Undo',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.amber.shade700,
+                decoration: TextDecoration.underline,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================
+// _HolidayView — full body screen shown after "Got it"
+// ============================================================
+class _HolidayView extends StatelessWidget {
+  final DateTime date;
+  final VoidCallback onWorkAnyway;
+  const _HolidayView({required this.date, required this.onWorkAnyway});
+
+  @override
+  Widget build(BuildContext context) {
+    final label = DateHelper.weekendLabel(date) ?? 'Weekend';
+    final theme = Theme.of(context);
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(28),
+              decoration: BoxDecoration(
+                color: Colors.orange.withValues(alpha: 0.1),
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: Colors.orange.withValues(alpha: 0.3),
+                  width: 2,
+                ),
+              ),
+              child: const Text('🏖️', style: TextStyle(fontSize: 64)),
+            ),
+            const SizedBox(height: 28),
+            Text(
+              'Today is $label',
+              style: theme.textTheme.headlineSmall?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Enjoy your well-deserved day off! 🎉',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.55),
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 20),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              decoration: BoxDecoration(
+                color: Colors.orange.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: Colors.orange.withValues(alpha: 0.4)),
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.beach_access_rounded,
+                    color: Colors.orange,
+                    size: 20,
+                  ),
+                  SizedBox(width: 10),
+                  Text(
+                    'No attendance required today',
+                    style: TextStyle(
+                      color: Colors.orange,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 36),
+            // Subtle escape hatch — low contrast intentional
+            TextButton.icon(
+              onPressed: onWorkAnyway,
+              icon: const Text('💪', style: TextStyle(fontSize: 13)),
+              label: const Text('I need to check in anyway'),
+              style: TextButton.styleFrom(
+                foregroundColor: theme.colorScheme.onSurface.withValues(
+                  alpha: 0.5,
+                ),
+                textStyle: const TextStyle(fontSize: 12),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================
+// _HomeAvatar — avatar photo or initial letter fallback
+// WHY ClipOval: tighter clip than CircleAvatar backgroundImage
+// ============================================================
 class _HomeAvatar extends StatelessWidget {
   final String? avatarUrl;
   final String name;
@@ -542,7 +1015,9 @@ class _HomeAvatar extends StatelessWidget {
   );
 }
 
-// ── _TodayStatusCard ──────────────────────────────────────────
+// ============================================================
+// _TodayStatusCard — compact status row in dashboard
+// ============================================================
 class _TodayStatusCard extends StatelessWidget {
   final String status;
   final String? checkOutTime;

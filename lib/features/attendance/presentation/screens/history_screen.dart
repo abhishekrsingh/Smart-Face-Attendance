@@ -1,3 +1,4 @@
+import 'package:face_track/core/utils/date_helper.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
@@ -110,6 +111,11 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
 
   Color _dotColor(DateTime day) {
     final r = _recordFor(day);
+    // ── Weekend with no record → show orange holiday dot ──
+    // WHY: without this, weekend days show no dot at all on
+    // the calendar — visually looks same as future dates.
+    // Orange dot makes holiday days instantly identifiable.
+    if (r == null && DateHelper.isWeekend(day)) return Colors.orange;
     if (r == null) return Colors.transparent;
     return switch (r['status'] as String?) {
       'present' => Colors.green,
@@ -314,11 +320,16 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       _LegendDot(color: Colors.green, label: 'Present'),
-                      const SizedBox(width: 16),
+                      const SizedBox(width: 12),
                       _LegendDot(color: Colors.blue, label: 'WFH'),
-                      const SizedBox(width: 16),
+                      const SizedBox(width: 12),
                       _LegendDot(color: Colors.red, label: 'Absent'),
-                      const SizedBox(width: 16),
+                      const SizedBox(width: 12),
+                      _LegendDot(
+                        color: Colors.orange,
+                        label: 'Holiday',
+                      ), // ← ADD
+                      const SizedBox(width: 12),
                       _LegendDot(color: Colors.grey, label: 'No Record'),
                     ],
                   ),
@@ -756,6 +767,15 @@ class _DayTile extends StatelessWidget {
 
   (String, String, Color) get _statusInfo {
     final status = entry.record?['status'] as String?;
+
+    // ── Weekend with no record → Holiday ────────────────
+    // WHY check record first: if someone worked on a weekend
+    // (edge case), their actual check-in status takes priority
+    // over the holiday label — real data always wins.
+    if (status == null && DateHelper.isWeekend(entry.date)) {
+      return ('🏖️', 'Holiday', Colors.orange);
+    }
+
     return switch (status) {
       'present' => ('🏢', 'Present', Colors.green),
       'wfh' => ('🏠', 'WFH', Colors.blue),
