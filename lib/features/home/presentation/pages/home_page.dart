@@ -90,6 +90,7 @@ class _HomePageState extends ConsumerState<HomePage> {
   // ── _loadTodayStatus() ─────────────────────────────────────
   Future<void> _loadTodayStatus() async {
     try {
+      await attendanceRepository.closeStaleCheckIn();
       final results = await Future.wait([
         attendanceRepository.getTodayAttendance(),
         profileRepository.getProfile(),

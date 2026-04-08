@@ -25,6 +25,7 @@ class _AdminLeavePageState extends ConsumerState<AdminLeavePage> {
   }
 
   Future<void> _loadLeaves() async {
+    if (!mounted) return;
     setState(() {
       _isLoading = true;
       _error = null;
@@ -55,186 +56,62 @@ class _AdminLeavePageState extends ConsumerState<AdminLeavePage> {
   int get _pendingCount =>
       _leaves.where((l) => l['status'] == 'pending').length;
 
-  // ── _showActionSheet() ───────────────────────────────────────
-  // PURPOSE: Admin approve or reject with optional note
-  // action = 'approved' or 'rejected'
+  // ── _showActionSheet() ────────────────────────────────────────
+  // FIX: replaced StatefulBuilder + inline TextEditingController
+  // with a dedicated _ActionSheet StatefulWidget.
+  //
+  // WHY this fixes the crash:
+  //   Old code — StatefulBuilder shares the parent's BuildContext.
+  //   TextField inside it holds InheritedWidget dependents on that
+  //   ctx. When admin types a reason and taps Reject/Approve,
+  //   Navigator.pop() was called followed immediately by
+  //   _loadLeaves() → setState(). This setState fired while the
+  //   sheet's TextField dependents were still alive on the old ctx,
+  //   causing the _dependents.isEmpty assertion crash.
+  //
+  //   New code — _ActionSheet is a separate StatefulWidget with its
+  //   own lifecycle. showModalBottomSheet<bool> returns a Future
+  //   that resolves ONLY after the sheet's widget tree is fully
+  //   disposed. So when we await it and then call _loadLeaves(),
+  //   there are zero active TextField dependents left. Crash gone.
   Future<void> _showActionSheet(
     Map<String, dynamic> leave,
     String action,
   ) async {
-    final noteController = TextEditingController();
-    bool isSaving = false;
-    final employeeName = leave['full_name'] ?? 'Employee';
-    final leaveType = leave['leave_type'] as String;
-    final isApproving = action == 'approved';
-
-    await showModalBottomSheet(
+    final bool? shouldReload = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
       useRootNavigator: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setSheetState) {
-          return Padding(
-            padding: EdgeInsets.only(
-              left: 24,
-              right: 24,
-              top: 24,
-              bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // ── Header ──────────────────────────────────
-                Row(
-                  children: [
-                    Icon(
-                      isApproving
-                          ? Icons.check_circle_rounded
-                          : Icons.cancel_rounded,
-                      color: isApproving ? Colors.green : Colors.red,
-                      size: 22,
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '${isApproving ? 'Approve' : 'Reject'} Leave',
-                            style: const TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          Text(
-                            '$employeeName · '
-                            '${_leaveTypeLabel(leaveType)}',
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Theme.of(
-                                context,
-                              ).colorScheme.onSurface.withValues(alpha: 0.5),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.close),
-                      onPressed: () => Navigator.of(ctx).pop(),
-                    ),
-                  ],
-                ),
-
-                const Divider(),
-                const SizedBox(height: 12),
-
-                // ── Admin Note ───────────────────────────────
-                const Text(
-                  'Admin Note (optional)',
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: noteController,
-                  maxLines: 3,
-                  decoration: InputDecoration(
-                    hintText: isApproving
-                        ? 'e.g. Approved. Enjoy your leave!'
-                        : 'e.g. Rejected due to project deadline.',
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    contentPadding: const EdgeInsets.all(12),
-                  ),
-                ),
-
-                const SizedBox(height: 20),
-
-                // ── Confirm Button ───────────────────────────
-                SizedBox(
-                  width: double.infinity,
-                  height: 50,
-                  child: ElevatedButton.icon(
-                    icon: isSaving
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Colors.white,
-                            ),
-                          )
-                        : Icon(
-                            isApproving
-                                ? Icons.check_rounded
-                                : Icons.close_rounded,
-                          ),
-                    label: Text(
-                      isSaving
-                          ? (isApproving ? 'Approving...' : 'Rejecting...')
-                          : (isApproving ? 'Approve Leave' : 'Reject Leave'),
-                    ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: isApproving ? Colors.green : Colors.red,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                    onPressed: isSaving
-                        ? null
-                        : () async {
-                            setSheetState(() => isSaving = true);
-                            try {
-                              await adminRepository.updateLeaveStatus(
-                                leaveId: leave['id'] as String,
-                                status: action,
-                                adminNote: noteController.text.trim().isEmpty
-                                    ? null
-                                    : noteController.text.trim(),
-                              );
-                              if (ctx.mounted) Navigator.of(ctx).pop();
-                              await _loadLeaves();
-                              if (mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text(
-                                      '${isApproving ? '✅ Approved' : '❌ Rejected'}: '
-                                      '$employeeName\'s '
-                                      '${_leaveTypeLabel(leaveType)} leave',
-                                    ),
-                                    backgroundColor: isApproving
-                                        ? Colors.green
-                                        : Colors.red,
-                                  ),
-                                );
-                              }
-                            } catch (e) {
-                              setSheetState(() => isSaving = false);
-                              if (mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text('Failed: $e'),
-                                    backgroundColor: Colors.red,
-                                  ),
-                                );
-                              }
-                            }
-                          },
-                  ),
-                ),
-              ],
-            ),
-          );
-        },
-      ),
+      // ── Separate StatefulWidget, NOT StatefulBuilder ──────────
+      builder: (_) => _ActionSheet(leave: leave, action: action),
     );
 
-    noteController.dispose();
+    // ── Reload only AFTER sheet is fully dismissed ────────────
+    // WHY: future from showModalBottomSheet resolves only after
+    //   sheet animation completes and widget is destroyed —
+    //   setState here is safe, no active dependents remain
+    if (shouldReload == true && mounted) {
+      await _loadLeaves();
+
+      final isApproving = action == 'approved';
+      final employeeName = leave['full_name'] ?? 'Employee';
+      final leaveType = leave['leave_type'] as String;
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '${isApproving ? '✅ Approved' : '❌ Rejected'}: '
+              '$employeeName\'s ${_leaveTypeLabel(leaveType)} leave',
+            ),
+            backgroundColor: isApproving ? Colors.green : Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   String _leaveTypeLabel(String type) => switch (type) {
@@ -280,7 +157,7 @@ class _AdminLeavePageState extends ConsumerState<AdminLeavePage> {
       ),
       body: Column(
         children: [
-          // ── Filter chips ─────────────────────────────────────
+          // ── Filter chips ──────────────────────────────────────
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -394,7 +271,198 @@ class _AdminLeavePageState extends ConsumerState<AdminLeavePage> {
   }
 }
 
+// ── _ActionSheet ──────────────────────────────────────────────
+// Separate StatefulWidget — owns its TextEditingController.
+// Fully disposed before parent's setState runs → crash eliminated.
+// Returns true  via pop(true)  → parent reloads list + shows snack
+// Returns false via pop(false) → user dismissed, parent does nothing
+class _ActionSheet extends StatefulWidget {
+  final Map<String, dynamic> leave;
+  final String action;
+
+  const _ActionSheet({required this.leave, required this.action});
+
+  @override
+  State<_ActionSheet> createState() => _ActionSheetState();
+}
+
+class _ActionSheetState extends State<_ActionSheet> {
+  late final TextEditingController _noteController;
+  bool _isSaving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _noteController = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    // ── Controller disposed here ──────────────────────────────
+    // WHY: TextField dependents on this widget's ctx are cleaned
+    //   up before showModalBottomSheet's Future resolves —
+    //   parent's _loadLeaves / setState never races with them
+    _noteController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final leave = widget.leave;
+    final action = widget.action;
+    final isApproving = action == 'approved';
+    final employeeName = leave['full_name'] ?? 'Employee';
+    final leaveType = leave['leave_type'] as String;
+
+    final leaveTypeLabel = switch (leaveType) {
+      'sick' => '🤒 Sick',
+      'casual' => '🌴 Casual',
+      'emergency' => '🚨 Emergency',
+      _ => '📋 Other',
+    };
+
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 24,
+        right: 24,
+        top: 24,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── Header ────────────────────────────────────────────
+          Row(
+            children: [
+              Icon(
+                isApproving ? Icons.check_circle_rounded : Icons.cancel_rounded,
+                color: isApproving ? Colors.green : Colors.red,
+                size: 22,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '${isApproving ? 'Approve' : 'Reject'} Leave',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    Text(
+                      '$employeeName · $leaveTypeLabel',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.onSurface.withValues(alpha: 0.5),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.close),
+                // pop(false) = dismissed = tell parent: don't reload
+                onPressed: () => Navigator.of(context).pop(false),
+              ),
+            ],
+          ),
+
+          const Divider(),
+          const SizedBox(height: 12),
+
+          // ── Admin Note ────────────────────────────────────────
+          const Text(
+            'Admin Note (optional)',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _noteController,
+            maxLines: 3,
+            decoration: InputDecoration(
+              hintText: isApproving
+                  ? 'e.g. Approved. Enjoy your leave!'
+                  : 'e.g. Rejected due to project deadline.',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+              contentPadding: const EdgeInsets.all(12),
+            ),
+          ),
+
+          const SizedBox(height: 20),
+
+          // ── Confirm Button ────────────────────────────────────
+          SizedBox(
+            width: double.infinity,
+            height: 50,
+            child: ElevatedButton.icon(
+              icon: _isSaving
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : Icon(
+                      isApproving ? Icons.check_rounded : Icons.close_rounded,
+                    ),
+              label: Text(
+                _isSaving
+                    ? (isApproving ? 'Approving...' : 'Rejecting...')
+                    : (isApproving ? 'Approve Leave' : 'Reject Leave'),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: isApproving ? Colors.green : Colors.red,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+              onPressed: _isSaving
+                  ? null
+                  : () async {
+                      setState(() => _isSaving = true);
+                      try {
+                        await adminRepository.updateLeaveStatus(
+                          leaveId: leave['id'] as String,
+                          status: action,
+                          adminNote: _noteController.text.trim().isEmpty
+                              ? null
+                              : _noteController.text.trim(),
+                        );
+                        if (mounted) {
+                          // pop(true) = success = tell parent to reload
+                          Navigator.of(context).pop(true);
+                        }
+                      } catch (e) {
+                        if (mounted) {
+                          setState(() => _isSaving = false);
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('Failed: $e'),
+                              backgroundColor: Colors.red,
+                            ),
+                          );
+                        }
+                      }
+                    },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 // ── _FilterChip ───────────────────────────────────────────────
+// No changes
 class _FilterChip extends StatelessWidget {
   final String label;
   final String value;
@@ -438,6 +506,7 @@ class _FilterChip extends StatelessWidget {
 }
 
 // ── _AdminLeaveCard ───────────────────────────────────────────
+// No changes
 class _AdminLeaveCard extends StatelessWidget {
   final Map<String, dynamic> leave;
   final VoidCallback? onApprove;
@@ -497,20 +566,30 @@ class _AdminLeaveCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── Header: Employee + Status ────────────────────
+          // ── Header: Employee + Status ──────────────────────
           Row(
             children: [
-              // ── Avatar ──────────────────────────────────
               CircleAvatar(
                 radius: 18,
                 backgroundColor: statusColor.withValues(alpha: 0.15),
-                child: Text(
-                  employeeName.isNotEmpty ? employeeName[0].toUpperCase() : '?',
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    color: statusColor,
-                  ),
-                ),
+                backgroundImage:
+                    (leave['face_image_url'] != null &&
+                        leave['face_image_url'].toString().isNotEmpty)
+                    ? NetworkImage(leave['face_image_url'] as String)
+                    : null,
+                child:
+                    (leave['face_image_url'] == null ||
+                        leave['face_image_url'].toString().isEmpty)
+                    ? Text(
+                        employeeName.isNotEmpty
+                            ? employeeName[0].toUpperCase()
+                            : '?',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: statusColor,
+                        ),
+                      )
+                    : null,
               ),
               const SizedBox(width: 10),
               Expanded(
@@ -531,7 +610,6 @@ class _AdminLeaveCard extends StatelessWidget {
                   ],
                 ),
               ),
-              // ── Status badge ─────────────────────────────
               Container(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 10,
@@ -557,7 +635,7 @@ class _AdminLeaveCard extends StatelessWidget {
           const Divider(height: 1),
           const SizedBox(height: 12),
 
-          // ── Leave Type + Dates ───────────────────────────
+          // ── Leave Type + Dates ─────────────────────────────
           Row(
             children: [
               Expanded(
@@ -616,7 +694,7 @@ class _AdminLeaveCard extends StatelessWidget {
             ],
           ),
 
-          // ── Reason ──────────────────────────────────────
+          // ── Reason ────────────────────────────────────────
           if (reason != null && reason.isNotEmpty) ...[
             const SizedBox(height: 8),
             Row(
@@ -634,7 +712,7 @@ class _AdminLeaveCard extends StatelessWidget {
             ),
           ],
 
-          // ── Admin note (already actioned) ────────────────
+          // ── Admin note (already actioned) ──────────────────
           if (adminNote != null && adminNote.isNotEmpty) ...[
             const SizedBox(height: 8),
             Container(
@@ -663,7 +741,7 @@ class _AdminLeaveCard extends StatelessWidget {
             ),
           ],
 
-          // ── Applied on ──────────────────────────────────
+          // ── Applied on ────────────────────────────────────
           const SizedBox(height: 8),
           Text(
             'Applied ${DateFormat('dd MMM yyyy, HH:mm').format(DateTime.parse(createdAt).toLocal())}',
@@ -675,16 +753,13 @@ class _AdminLeaveCard extends StatelessWidget {
             ),
           ),
 
-          // ── Approve / Reject buttons (pending only) ───────
-          // FIX: Both wrapped in SizedBox(height: 44) +
-          // minimumSize → always exactly same height & width
+          // ── Approve / Reject buttons (pending only) ────────
           if (isPending) ...[
             const SizedBox(height: 14),
             const Divider(height: 1),
             const SizedBox(height: 14),
             Row(
               children: [
-                // ── Reject ──────────────────────────────────
                 Expanded(
                   child: SizedBox(
                     height: 44,
@@ -710,7 +785,6 @@ class _AdminLeaveCard extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 12),
-                // ── Approve ─────────────────────────────────
                 Expanded(
                   child: SizedBox(
                     height: 44,

@@ -35,7 +35,7 @@ class TaskRepository {
     // Group by date string
     final result = <String, List<TaskModel>>{};
     for (final row in response) {
-      final task = TaskModel.fromMap(row as Map<String, dynamic>);
+      final task = TaskModel.fromMap(row);
       result.putIfAbsent(task.date, () => []).add(task);
     }
     return result;

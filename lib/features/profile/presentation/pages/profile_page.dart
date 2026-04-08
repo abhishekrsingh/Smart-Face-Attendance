@@ -42,8 +42,8 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
       ]);
       if (mounted) {
         setState(() {
-          profile = results[0] as Map<String, dynamic>;
-          summary = results[1] as Map<String, dynamic>;
+          profile = results[0];
+          summary = results[1];
           isLoading = false;
         });
       }

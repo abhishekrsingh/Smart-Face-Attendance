@@ -200,8 +200,10 @@ class _MarkAttendancePageState extends ConsumerState<MarkAttendancePage>
       // initialize() which re-checks 6PM condition → unwanted dialog
       if (next.status == AttendanceStatus.checkInSuccess ||
           next.status == AttendanceStatus.checkOutSuccess) {
+        final nav = Navigator.of(context); // ← capture BEFORE async gap
+
         Future.delayed(const Duration(seconds: 2), () {
-          if (mounted) Navigator.of(context).pop();
+          if (mounted) nav.pop(); // ← use captured ref, not context
         });
       }
     });

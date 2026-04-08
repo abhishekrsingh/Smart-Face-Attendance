@@ -25,10 +25,21 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
   final ScrollController _scrollController = ScrollController();
   final Map<String, Map<String, dynamic>> _recordMap = {};
 
+  // ✅ NEW — replace with this
   @override
   void initState() {
     super.initState();
     _selectedDay = DateTime.now();
+    _initHistory(); // ← calls stale cleanup first, then loads history
+  }
+
+  Future<void> _initHistory() async {
+    // Clean up any stale check-ins from previous days FIRST
+    // WHY: if user opens history directly without home screen,
+    // stale records need cleanup here too before cards render
+    await attendanceRepository.closeStaleCheckIn();
+
+    // Then load history as normal
     _loadHistory();
   }
 
@@ -49,7 +60,9 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
       );
       if (mounted) {
         final map = <String, Map<String, dynamic>>{};
-        for (final r in data) map[r['date'] as String] = r;
+        for (final r in data) {
+          map[r['date'] as String] = r;
+        }
         setState(() {
           _records = data;
           _recordMap
@@ -189,8 +202,9 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                     },
                     onPageChanged: (focused) {
                       final now = DateTime.now();
-                      if (focused.isAfter(DateTime(now.year, now.month)))
+                      if (focused.isAfter(DateTime(now.year, now.month))) {
                         return;
+                      }
                       setSheetState(() => sheetFocused = focused);
                     },
                     onDaySelected: (selected, focused) {

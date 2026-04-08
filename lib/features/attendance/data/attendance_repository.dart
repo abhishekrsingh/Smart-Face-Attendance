@@ -319,6 +319,66 @@ class AttendanceRepository {
     }
   }
 
+  Future<void> closeStaleCheckIn() async {
+    try {
+      final userId = _client.auth.currentUser?.id;
+      if (userId == null) return;
+
+      final todayStr = _localDateString();
+
+      final stale = await _client
+          .from('attendance')
+          .select()
+          .eq('user_id', userId)
+          .filter('check_out_time', 'is', null)
+          .not('check_in_time', 'is', null)
+          .neq('date', todayStr)
+          .maybeSingle();
+
+      if (stale == null) return;
+
+      final checkInUtc = DateTime.parse(stale['check_in_time'] as String);
+      final checkInLocal = checkInUtc.toLocal();
+
+      // ── Auto-checkout at end of that day (23:59) ──────────
+      // WHY 23:59 not 18:00: employee may have worked late and
+      // forgot to check out — 23:59 is safer than cutting hours
+      // at 6 PM. Admin can correct it manually if needed.
+      final autoCheckOutLocal = DateTime(
+        checkInLocal.year,
+        checkInLocal.month,
+        checkInLocal.day,
+        23, // end of day
+        59,
+      );
+      final autoCheckOutUtc = autoCheckOutLocal.toUtc();
+
+      // Calculate total hours — capped at 12h max
+      // WHY 12h cap: prevents unrealistic hours if check-in
+      // time is very early (e.g., midnight edge cases)
+      final rawHours = autoCheckOutUtc.difference(checkInUtc).inMinutes / 60.0;
+      final totalHours = rawHours.clamp(
+        0.0,
+        12.0,
+      ); // ← 12h cap for late workers
+
+      await _client
+          .from('attendance')
+          .update({
+            'check_out_time': autoCheckOutUtc.toIso8601String(),
+            'total_hours': double.parse(totalHours.toStringAsFixed(2)),
+            'status': 'present',
+            'auto_checked_out': true, // admin can see this was auto-closed
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          })
+          .eq('id', stale['id']);
+
+      AppLogger.info('✅ Stale check-in auto-closed for: ${stale['date']}');
+    } catch (e, st) {
+      AppLogger.error('closeStaleCheckIn error', e, st);
+    }
+  }
+
   // ── getAttendanceHistory() ──────────────────────────────────
   Future<List<Map<String, dynamic>>> getAttendanceHistory() async {
     final userId = _client.auth.currentUser!.id;

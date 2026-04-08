@@ -1,5 +1,7 @@
+import 'package:face_track/core/utils/app_logger.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../data/leave_repository.dart';
 
 class LeavePage extends StatefulWidget {
@@ -15,13 +17,58 @@ class _LeavePageState extends State<LeavePage> {
   String? _error;
   String _filter = 'all';
 
+  // ── Real-time subscription ────────────────────────────────
+  // WHY: when admin approves/rejects leave from admin panel,
+  // this subscription fires and auto-refreshes the list
+  // WITHOUT this, employee screen never updates until manual refresh
+  RealtimeChannel? _leaveChannel;
+
   @override
   void initState() {
     super.initState();
     _loadLeaves();
+    _subscribeToLeaveUpdates(); // ← start listening for admin actions
+  }
+
+  @override
+  void dispose() {
+    // ── CRITICAL: always unsubscribe before dispose ───────────
+    // WHY: without this, real-time callback fires on a disposed
+    // widget → causes _dependents.isEmpty crash
+    _leaveChannel?.unsubscribe();
+    super.dispose();
+  }
+
+  // ── _subscribeToLeaveUpdates() ────────────────────────────
+  // Listens for any UPDATE on leave_requests table that belongs
+  // to the current user — fires when admin approves or rejects
+  void _subscribeToLeaveUpdates() {
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+    if (userId == null) return;
+
+    _leaveChannel = Supabase.instance.client
+        .channel('leave_updates_$userId')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.update,
+          schema: 'public',
+          table: 'leave_requests',
+          callback: (payload) {
+            // ── Safety check before setState ─────────────────
+            // WHY: real-time callback can fire after widget
+            // is disposed — mounted check prevents crash
+            if (!mounted) return;
+
+            AppLogger.info('📡 Leave status changed — refreshing');
+            _loadLeaves(); // auto-refresh when admin acts
+          },
+        )
+        .subscribe();
   }
 
   Future<void> _loadLeaves() async {
+    // ── Guard: don't load if already unmounted ────────────────
+    if (!mounted) return;
+
     setState(() {
       _isLoading = true;
       _error = null;
@@ -147,11 +194,19 @@ class _LeavePageState extends State<LeavePage> {
       ),
     );
 
+    // ── mounted check AFTER await ─────────────────────────────
+    // WHY: user may have navigated away while dialog was open
     if (confirm != true || !mounted) return;
 
     try {
       await leaveRepository.cancelLeave(leaveId: leave['id'] as String);
-      _loadLeaves();
+
+      // ── await _loadLeaves() ───────────────────────────────
+      // WHY await: previously was fire-and-forget — if widget
+      // disposed during load, setState inside would crash
+      if (!mounted) return;
+      await _loadLeaves();
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -173,9 +228,6 @@ class _LeavePageState extends State<LeavePage> {
   }
 
   // ── _confirmDelete() ─────────────────────────────────────────
-  // PURPOSE: Confirm then hard-delete approved/rejected/cancelled
-  // WHY Future<bool>: Dismissible uses return value to decide
-  //   whether to remove card (true) or snap it back (false)
   Future<bool> _confirmDelete(Map<String, dynamic> leave) async {
     final leaveType = leave['leave_type'] as String;
     final startDate = leave['start_date'] as String;
@@ -226,7 +278,6 @@ class _LeavePageState extends State<LeavePage> {
                           ),
                         ),
                       ),
-                      // ── Status pill ─────────────────────────
                       Container(
                         padding: const EdgeInsets.symmetric(
                           horizontal: 8,
@@ -288,11 +339,26 @@ class _LeavePageState extends State<LeavePage> {
       ),
     );
 
+    // ── mounted check AFTER await dialog ─────────────────────
     if (confirm != true) return false;
+    if (!mounted) return false; // ← widget disposed while dialog open
 
+    // NEW
     try {
       await leaveRepository.deleteLeave(leaveId: leave['id'] as String);
+
       if (mounted) {
+        // ── Remove from local list immediately ────────────────
+        // WHY: Dismissible returns true and removes the card
+        //   visually. If _leaves still holds the deleted item,
+        //   any future setState() rebuilds the list and hands
+        //   the same key back to Dismissible → key conflict →
+        //   native crash. Removing locally keeps _leaves in
+        //   sync with what Dismissible expects.
+        setState(() {
+          _leaves.removeWhere((l) => l['id'] == leave['id']);
+        });
+
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('🗑️ Leave record deleted'),
@@ -300,7 +366,7 @@ class _LeavePageState extends State<LeavePage> {
           ),
         );
       }
-      return true; // ← card removed from UI
+      return true;
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -310,7 +376,7 @@ class _LeavePageState extends State<LeavePage> {
           ),
         );
       }
-      return false; // ← card snaps back
+      return false;
     }
   }
 
@@ -336,11 +402,6 @@ class _LeavePageState extends State<LeavePage> {
     _ => Colors.amber,
   };
 
-  // ── _isDeletable() ───────────────────────────────────────────
-  // WHY include approved: admin already actioned it —
-  //   employee can safely clear it from history
-  // WHY exclude pending: use cancel button instead —
-  //   ensures admin sees withdrawal, not silent disappearance
   bool _isDeletable(String status) =>
       status == 'approved' || status == 'rejected' || status == 'cancelled';
 
@@ -360,7 +421,6 @@ class _LeavePageState extends State<LeavePage> {
       ),
       body: Column(
         children: [
-          // ── Filter chips ─────────────────────────────────────
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -403,10 +463,6 @@ class _LeavePageState extends State<LeavePage> {
               ],
             ),
           ),
-
-          // ── Swipe hint banner ────────────────────────────────
-          // WHY show only when deletable cards exist: avoids
-          // confusing hint when only pending cards are visible
           if (_filtered.any((l) => _isDeletable(l['status'] as String)))
             Container(
               margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
@@ -429,7 +485,6 @@ class _LeavePageState extends State<LeavePage> {
                 ],
               ),
             ),
-
           Expanded(
             child: _isLoading
                 ? const Center(child: CircularProgressIndicator())
@@ -492,15 +547,10 @@ class _LeavePageState extends State<LeavePage> {
                         final isPending = status == 'pending';
                         final canDelete = _isDeletable(status);
 
-                        // ── Swipe-to-delete for final status ──
-                        // WHY Dismissible only on deletable:
-                        // pending cards use cancel button — no swipe
                         if (canDelete) {
                           return Dismissible(
                             key: ValueKey(leave['id'] as String),
                             direction: DismissDirection.endToStart,
-                            // WHY confirmDismiss: snaps card back
-                            // if user taps "Keep" or DB fails
                             confirmDismiss: (_) => _confirmDelete(leave),
                             background: Container(
                               margin: const EdgeInsets.only(bottom: 12),
@@ -538,7 +588,6 @@ class _LeavePageState extends State<LeavePage> {
                           );
                         }
 
-                        // ── Pending cards (no swipe) ──────────
                         return _LeaveCard(
                           leave: leave,
                           onEdit: isPending
