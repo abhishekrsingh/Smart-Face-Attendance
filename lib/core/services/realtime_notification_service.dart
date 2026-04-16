@@ -41,7 +41,7 @@ class RealtimeNotificationService {
     // ── Initialize plugin ───────────────────────────────
     await _local.initialize(
       settings: const InitializationSettings(
-        android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+        android: AndroidInitializationSettings('@mipmap/launcher_icon'),
       ),
       onDidReceiveNotificationResponse: (response) {
         AppLogger.debug('Notification tapped: ${response.payload}');
@@ -292,7 +292,7 @@ class RealtimeNotificationService {
             channelDescription: 'Attendance reminders',
             importance: Importance.high,
             priority: Priority.high,
-            icon: '@mipmap/ic_launcher',
+            icon: '@mipmap/launcher_icon',
           ),
         ),
         payload: payload,
